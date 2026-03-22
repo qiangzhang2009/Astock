@@ -1,17 +1,15 @@
 {
-  "name": "astock",
   "version": 2,
   "builds": [
     {
-      "src": "frontend/dist/**",
+      "src": "dist/**",
       "use": "@vercel/static"
     }
   ],
   "routes": [
     {
-      "src": "/api/(.*)",
-      "dest": "https://astock-api.onrender.com/api/$1"
+      "src": "/(.*)",
+      "dest": "dist/$1"
     }
-  ],
-  "regions": ["iad1"]
+  ]
 }

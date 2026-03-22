@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
+
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://astock-api.onrender.com';
+axios.defaults.baseURL = API_BASE;
 import StockSelector from './components/StockSelector';
 import CandlestickChart from './components/CandlestickChart';
 import NewsPanel from './components/NewsPanel';
