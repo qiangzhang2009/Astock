@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.database import init_db
+from database import init_db
 from api.routers import stocks, news, analysis, predict, screener
 
 app = FastAPI(title="Astock API", version="1.0.0",
