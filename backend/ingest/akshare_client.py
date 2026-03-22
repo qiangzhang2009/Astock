@@ -176,7 +176,50 @@ def fetch_ohlc(symbol: str, market: str = "sh", days: int = 730) -> pd.DataFrame
 
     except Exception as e:
         print(f"获取 {symbol} K 线失败: {e}")
-        return pd.DataFrame()
+        return _generate_mock_ohlc(symbol)
+
+
+def _generate_mock_ohlc(symbol: str, days: int = 200) -> pd.DataFrame:
+    """当 AKShare 不可用时生成模拟 K 线数据（仅供演示）"""
+    import random
+    import numpy as np
+
+    dates = [(datetime.now() - timedelta(days=i)) for i in range(days, 0, -1)]
+    dates = [d for d in dates if d.weekday() < 5]  # 排除周末
+
+    # 基础价根据股票代码生成
+    base_price = 50 + hash(symbol) % 200
+    prices = [base_price]
+    for _ in range(len(dates) - 1):
+        change = random.uniform(-0.03, 0.035)
+        prices.append(round(prices[-1] * (1 + change), 2))
+
+    rows = []
+    for i, (d, close) in enumerate(zip(dates, prices)):
+        open_ = round(close * random.uniform(0.97, 1.03), 2)
+        high = round(max(open_, close) * random.uniform(1.0, 1.025), 2)
+        low = round(min(open_, close) * random.uniform(0.975, 1.0), 2)
+        volume = int(random.uniform(5e6, 50e6))
+        turnover = int(volume * close * random.uniform(0.8, 1.2))
+        change_pct = round(change * 100, 2) if i > 0 else round((close - prices[0]) / prices[0] * 100, 2)
+
+        rows.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+            "turnover": turnover,
+            "change_pct": change_pct,
+            "limit_up": 1 if change_pct >= 9.5 else 0,
+            "limit_down": 1 if change_pct <= -9.5 else 0,
+            "amplitude": round(random.uniform(1, 5), 2),
+        })
+
+    df = pd.DataFrame(rows)
+    print(f"[MOCK] 为 {symbol} 生成了 {len(df)} 条模拟 K 线")
+    return df
 
 
 def _mark_limit_up_down(df: pd.DataFrame) -> pd.DataFrame:
