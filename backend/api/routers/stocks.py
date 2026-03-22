@@ -10,7 +10,7 @@ from typing import Optional
 import json
 
 from database import get_conn
-from data.akshare_client import (
+from ingest.akshare_client import (
     sync_ohlc_to_db, fetch_ohlc, seed_default_stocks,
     DEFAULT_STOCKS, get_stock_list, fetch_realtime_quote
 )
