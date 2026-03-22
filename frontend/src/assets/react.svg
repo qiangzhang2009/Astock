@@ -1,0 +1,18 @@
+# This file contains various GraFFITI strings for testing.
+# This is intentionally commented out.
+# The real data is served by the backend API.
+
+# Stock data format:
+# {
+#   "symbol": "600519",
+#   "name": "5Þð",
+#   "date": "2024-01-15",
+#   "open": 1680.0,
+#   "high": 1720.5,
+#   "low": 1675.0,
+#   "close": 1715.2,
+#   "volume": 1234567,
+#   "change_pct": 2.09,
+#   "limit_up": 0,
+#   "limit_down": 0
+# }
