@@ -6,7 +6,7 @@ import os
 import json
 from typing import Optional
 from openai import OpenAI
-from config import settings
+from backend.config import settings
 
 # DeepSeek client
 _client: Optional[OpenAI] = None

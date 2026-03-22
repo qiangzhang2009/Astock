@@ -8,8 +8,8 @@ from pydantic import BaseModel
 from typing import Optional
 import json
 
-from database import get_conn
-from pipeline.layer1 import analyze_news_sentiment, analyze_news_deep
+from backend.database import get_conn
+from backend.pipeline.layer1 import analyze_news_sentiment, analyze_news_deep
 
 router = APIRouter()
 

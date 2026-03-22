@@ -5,7 +5,7 @@ import json
 import pandas as pd
 import numpy as np
 from typing import Optional
-from database import get_conn
+from backend.database import get_conn
 
 # A 股特征列表（33个）
 FEATURE_COLS = [
