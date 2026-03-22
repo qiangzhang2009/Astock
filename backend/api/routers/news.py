@@ -11,8 +11,8 @@ from typing import Optional
 import hashlib
 from datetime import datetime
 
-from backend.database import get_conn
-from backend.pipeline.layer1 import analyze_news_sentiment
+from database import get_conn
+from pipeline.layer1 import analyze_news_sentiment
 
 router = APIRouter()
 

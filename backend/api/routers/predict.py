@@ -7,8 +7,8 @@ from typing import Optional
 import json
 import pandas as pd
 
-from backend.database import get_conn
-from backend.ml.inference import generate_forecast, find_similar_periods
+from database import get_conn
+from ml.inference import generate_forecast, find_similar_periods
 
 router = APIRouter()
 

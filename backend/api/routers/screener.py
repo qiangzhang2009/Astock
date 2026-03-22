@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
-from backend.database import get_conn
+from database import get_conn
 
 router = APIRouter()
 

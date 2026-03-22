@@ -1,5 +1,5 @@
 import sqlite3
-from backend.config import settings
+from config import settings
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS stocks (
