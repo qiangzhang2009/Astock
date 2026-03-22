@@ -1,0 +1,32 @@
+{
+  "name": "astock",
+  "version": 2,
+  "builds": [
+    {
+      "src": "frontend/dist/**",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "https://astock-api.onrender.com/api/$1"
+    },
+    {
+      "src": "/Astock/api/(.*)",
+      "dest": "https://astock-api.onrender.com/api/$1"
+    },
+    {
+      "src": "/Astock/assets/(.*)",
+      "dest": "/Astock/assets/$1"
+    },
+    {
+      "src": "/Astock/(.*)",
+      "dest": "/Astock/index.html"
+    }
+  ],
+  "regions": ["iad1"],
+  "env": {
+    "DEEPSEEK_API_KEY": "@deepseek_api_key"
+  }
+}

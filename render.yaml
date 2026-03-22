@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: astock-api
+    region: oregon
+    plan: free
+    branch: main
+    repo: https://github.com/qiangzhang2009/Astock
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DATABASE_PATH
+        value: astock.db
+      - key: PYTHONPATH
+        value: /app
+
+  - type: web
+    name: astock-frontend
+    region: oregon
+    plan: free
+    branch: main
+    repo: https://github.com/qiangzhang2009/Astock
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=0, must-revalidate
+    routes:
+      - path: /Astock
+        singlePageApplication: true
+    envVars:
+      - key: VITE_API_URL
+        value: https://astock-api.onrender.com

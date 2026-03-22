@@ -1,0 +1,31 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'pipeline/**'
+      - 'ml/**'
+      - 'data/**'
+      - 'requirements.txt'
+      - 'Dockerfile'
+      - 'railway.json'
+      - '!.env'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          railway login --token "$RAILWAY_TOKEN"
+          railway up --service astock-api --variable DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
