@@ -11,22 +11,7 @@
     {
       "src": "/api/(.*)",
       "dest": "https://astock-api.onrender.com/api/$1"
-    },
-    {
-      "src": "/Astock/api/(.*)",
-      "dest": "https://astock-api.onrender.com/api/$1"
-    },
-    {
-      "src": "/Astock/assets/(.*)",
-      "dest": "/Astock/assets/$1"
-    },
-    {
-      "src": "/Astock/(.*)",
-      "dest": "/Astock/index.html"
     }
   ],
-  "regions": ["iad1"],
-  "env": {
-    "DEEPSEEK_API_KEY": "@deepseek_api_key"
-  }
+  "regions": ["iad1"]
 }
