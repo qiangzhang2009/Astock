@@ -9,7 +9,7 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: DEEPSEEK_API_KEY
-        sync: false
+        fromGroup: DEEPSEEK_API_KEY
       - key: DATABASE_PATH
         value: astock.db
       - key: PYTHONPATH
@@ -30,6 +30,3 @@ services:
     routes:
       - path: /Astock
         singlePageApplication: true
-    envVars:
-      - key: VITE_API_URL
-        value: https://astock-api.onrender.com
