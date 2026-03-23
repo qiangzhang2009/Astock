@@ -49,16 +49,7 @@ def list_stocks():
 @router.get("/search")
 def search_stocks(q: str = Query(..., min_length=1)):
     """搜索股票（代码或名称）"""
-    conn = get_conn()
-    rows = conn.execute(
-        """SELECT symbol, name, sector, market FROM stocks
-           WHERE symbol LIKE ? OR name LIKE ? LIMIT 20""",
-        (f"%{q}%", f"%{q}%")
-    ).fetchall()
-    conn.close()
-    if rows:
-        return [dict(r) for r in rows]
-    # Fallback: search DEFAULT_STOCKS
+    # 直接搜索 DEFAULT_STOCKS（避免 DB 查询延迟）
     matches = [
         {"symbol": code, "name": name, "sector": sector, "market": market}
         for code, name, sector, market in DEFAULT_STOCKS
