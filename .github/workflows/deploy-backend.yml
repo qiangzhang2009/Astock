@@ -5,12 +5,12 @@ on:
     branches: [main]
     paths:
       - 'backend/**'
+      - 'ingest/**'
       - 'pipeline/**'
       - 'ml/**'
-      - 'data/**'
       - 'requirements.txt'
       - 'Dockerfile'
-      - 'railway.json'
+      - 'render.yaml'
       - '!.env'
 
 jobs:
@@ -19,13 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-
-      - name: Deploy to Railway
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      - name: Trigger Render deploy
         run: |
-          railway login --token "$RAILWAY_TOKEN"
-          railway up --service astock-api --variable DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
+          curl -s -X POST "https://api.render.com/v1/services/${{ vars.RENDER_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{}'

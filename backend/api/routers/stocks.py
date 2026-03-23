@@ -3,16 +3,17 @@ GET /api/stocks                          — 股票列表
 GET /api/stocks/{symbol}/ohlc            — K 线数据
 GET /api/stocks/search?q=               — 搜索股票
 POST /api/stocks/{symbol}/sync          — 手动同步 K 线
+POST /api/stocks/sync-all              — 同步所有默认股票
 """
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
-import json
 
 from database import get_conn
-from ingest.akshare_client import (
+from ingest.sina_client import (
     sync_ohlc_to_db, fetch_ohlc, seed_default_stocks,
-    DEFAULT_STOCKS, get_stock_list, fetch_realtime_quote
+    DEFAULT_STOCKS, fetch_realtime_quote, fetch_realtime_batch,
+    get_full_symbol,
 )
 
 router = APIRouter()
@@ -50,12 +51,10 @@ def search_stocks(q: str = Query(..., min_length=1)):
     conn.close()
     if rows:
         return [dict(r) for r in rows]
-
-    # Fallback: search full market list
-    all_stocks = get_stock_list()
+    # Fallback: search DEFAULT_STOCKS
     matches = [
-        {"symbol": code, "name": name, "sector": "", "market": market}
-        for code, name, market in all_stocks
+        {"symbol": code, "name": name, "sector": sector, "market": market}
+        for code, name, sector, market in DEFAULT_STOCKS
         if q.upper() in code.upper() or q in name
     ]
     return matches[:20]
@@ -75,15 +74,14 @@ def get_ohlc(symbol: str, days: int = Query(365, ge=30, le=2000)):
     conn.close()
 
     if not rows:
-        # Try to fetch from AKShare if not in DB
-        market = "sh" if symbol.startswith("6") else "sz"
+        # 从新浪财经获取
+        market = "sh" if symbol.startswith("6") else ("bj" if symbol.startswith("8") else "sz")
         df = fetch_ohlc(symbol, market, days)
         if df.empty:
             raise HTTPException(status_code=404, detail=f"无 {symbol} 的 K 线数据")
         return df.to_dict(orient="records")
 
     result = [dict(r) for r in rows]
-    # 确保 numeric 类型正确
     for r in result:
         for k in ["open", "high", "low", "close", "volume", "turnover",
                   "change_pct", "amplitude"]:
@@ -97,7 +95,7 @@ def get_ohlc(symbol: str, days: int = Query(365, ge=30, le=2000)):
 
 @router.get("/{symbol}/info")
 def get_stock_info(symbol: str):
-    """获取股票基本信息 + 最新行情"""
+    """获取股票基本信息 + 实时行情"""
     conn = get_conn()
     row = conn.execute(
         "SELECT symbol, name, sector, market FROM stocks WHERE symbol = ?",
@@ -109,9 +107,8 @@ def get_stock_info(symbol: str):
         raise HTTPException(status_code=404, detail=f"股票 {symbol} 不在跟踪列表中")
 
     info = dict(row)
-    # 尝试获取实时行情
     try:
-        quote = fetch_realtime_quote(symbol)
+        quote = fetch_realtime_quote(symbol, info.get("market", "sh"))
         if quote:
             info.update(quote)
     except Exception:
@@ -133,7 +130,7 @@ def sync_stock(symbol: str):
 
 @router.post("/sync-all")
 def sync_all():
-    """同步所有默认股票 K 线数据"""
+    """同步所有默认股票 K 线数据（来自新浪财经）"""
     conn = get_conn()
     seed_default_stocks(conn)
     conn.close()
