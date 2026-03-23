@@ -139,6 +139,49 @@ def get_stock_info(symbol: str):
         db.close()
 
 
+@router.get("/{symbol}/realtime")
+def get_realtime_quote(symbol: str):
+    """
+    获取股票实时行情（新浪财经）
+    Returns: {symbol, name, price, change, change_pct, volume, amount, high, low, open, prev_close}
+    """
+    market = "sh" if symbol.startswith(("6", "9")) else "sz"
+    quote = fetch_realtime_quote(symbol, market)
+
+    if quote:
+        quote["symbol"] = symbol
+        quote["market"] = market
+        return quote
+
+    # Fallback: try from database
+    db = SessionLocal()
+    try:
+        kline = db.query(DailyKline).filter(
+            DailyKline.code == symbol
+        ).order_by(DailyKline.date.desc()).first()
+
+        if kline:
+            stock = db.query(Stock).filter(Stock.symbol == symbol).first()
+            return {
+                "symbol": symbol,
+                "name": stock.name if stock else symbol,
+                "market": market,
+                "price": kline.close,
+                "change": kline.change_pct,
+                "change_pct": kline.change_pct,
+                "prev_close": kline.close / (1 + kline.change_pct / 100) if kline.change_pct != 0 else kline.close,
+                "open": kline.open,
+                "high": kline.high,
+                "low": kline.low,
+                "volume": int(kline.volume),
+                "amount": int(kline.amount) if kline.amount else 0,
+                "source": "db",
+            }
+        raise HTTPException(status_code=404, detail=f"股票 {symbol} 实时行情获取失败")
+    finally:
+        db.close()
+
+
 @router.post("/{symbol}/sync")
 def sync_stock(symbol: str):
     """手动触发 K 线同步"""

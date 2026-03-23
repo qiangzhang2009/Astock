@@ -6,6 +6,7 @@ import sys
 import os
 import json
 import hashlib
+import re
 from datetime import datetime, timedelta
 import threading
 
@@ -19,8 +20,13 @@ import pandas as pd
 import httpx
 from database import SessionLocal, Stock, DailyKline, init_db
 
-# Default watched A-share stocks
-DEFAULT_STOCKS = [
+# Import expanded A-share stock pool (300+ stocks across all sectors)
+try:
+    from .stock_pool import ASTOCK_POOL, SECTORS
+    DEFAULT_STOCKS = ASTOCK_POOL
+except ImportError:
+    # Fallback inline if data module unavailable
+    DEFAULT_STOCKS = [
     # 科技/AI
     ("002230", "科大讯飞", "AI", "sz"),
     ("688981", "中芯国际", "半导体", "sh"),
@@ -90,7 +96,16 @@ DEFAULT_STOCKS = [
     ("600036", "招商银行", "银行", "sh"),
     ("300124", "汇川技术", "工业自动化", "sz"),
     ("002050", "三花智控", "热管理", "sz"),
-]
+    ]
+except ImportError:
+    # Minimal fallback if data module unavailable
+    DEFAULT_STOCKS = [
+        ("002230", "科大讯飞", "AI", "sz"),
+        ("688981", "中芯国际", "半导体", "sh"),
+        ("300750", "宁德时代", "新能源", "sz"),
+        ("600519", "贵州茅台", "白酒", "sh"),
+        ("600036", "招商银行", "银行", "sh"),
+    ]
 
 # Sina Finance HTTP headers
 SINA_HEADERS = {
@@ -123,6 +138,109 @@ def _fetch_url(url: str, timeout: int = 15) -> bytes | None:
 def _decode_gbk(text: bytes) -> str:
     """Decode GBK bytes to UTF-8 string."""
     return text.decode("gbk", errors="replace")
+
+
+def fetch_realtime_quote(symbol: str, market: str = "sh") -> dict | None:
+    """
+    Fetch realtime quote for a single stock from Sina Finance.
+    Returns a dict with price, change, volume, etc.
+    """
+    full_sym = get_full_symbol(symbol, market)
+    url = f"http://hq.sinajs.cn/list={full_sym}"
+    raw = _fetch_url(url, timeout=10)
+    if not raw:
+        return None
+
+    text = raw.decode("gbk", errors="replace")
+    m = re.search(r'hq_str_\w+="([^"]+)"', text)
+    if not m:
+        return None
+
+    fields = m.group(1).split(",")
+    if len(fields) < 32:
+        return None
+
+    try:
+        name = fields[0]
+        open_ = float(fields[1]) if fields[1] else 0
+        prev_close = float(fields[2]) if fields[2] else 0
+        price = float(fields[3]) if fields[3] else 0
+        high = float(fields[4]) if fields[4] else 0
+        low = float(fields[5]) if fields[5] else 0
+        volume = float(fields[8]) if fields[8] else 0
+        amount = float(fields[9]) if fields[9] else 0
+        change = price - prev_close
+        change_pct = (change / prev_close * 100) if prev_close else 0
+        amplitude = ((high - low) / prev_close * 100) if prev_close else 0
+
+        return {
+            "name": name,
+            "price": price,
+            "open": open_,
+            "prev_close": prev_close,
+            "high": high,
+            "low": low,
+            "volume": int(volume),
+            "amount": int(amount),
+            "change": round(change, 2),
+            "change_pct": round(change_pct, 2),
+            "amplitude": round(amplitude, 2),
+        }
+    except (IndexError, ValueError) as e:
+        print(f"[SINA] Quote parse error {symbol}: {e}")
+        return None
+
+
+def fetch_realtime_quotes(symbols: list[str], markets: list[str]) -> list[dict]:
+    """
+    Fetch realtime quotes for multiple stocks from Sina Finance.
+    symbols and markets should be parallel lists.
+    """
+    if not symbols:
+        return []
+
+    codes = ",".join(get_full_symbol(s, m) for s, m in zip(symbols, markets))
+    url = f"http://hq.sinajs.cn/list={codes}"
+    raw = _fetch_url(url, timeout=15)
+    if not raw:
+        return []
+
+    text = raw.decode("gbk", errors="replace")
+    results = []
+
+    for sym, mkt in zip(symbols, markets):
+        pattern = rf'hq_str_{get_full_symbol(sym, mkt)}="([^"]+)"'
+        m = re.search(pattern, text)
+        if not m or not m.group(1):
+            results.append({"symbol": sym, "market": mkt, "error": "no_data"})
+            continue
+
+        fields = m.group(1).split(",")
+        if len(fields) < 10:
+            results.append({"symbol": sym, "market": mkt, "error": "parse_error"})
+            continue
+
+        try:
+            prev_close = float(fields[2]) if fields[2] else 0
+            price = float(fields[3]) if fields[3] else 0
+            change = price - prev_close
+            results.append({
+                "symbol": sym,
+                "name": fields[0],
+                "price": price,
+                "prev_close": prev_close,
+                "open": float(fields[1]) if fields[1] else 0,
+                "high": float(fields[4]) if fields[4] else 0,
+                "low": float(fields[5]) if fields[5] else 0,
+                "volume": int(float(fields[8])) if fields[8] else 0,
+                "amount": int(float(fields[9])) if fields[9] else 0,
+                "change": round(change, 2),
+                "change_pct": round((change / prev_close * 100) if prev_close else 0, 2),
+            })
+        except (IndexError, ValueError):
+            results.append({"symbol": sym, "market": mkt, "error": "parse_error"})
+
+    return results
 
 
 def fetch_ohlc(symbol: str, market: str = "sh", days: int = 730) -> pd.DataFrame:

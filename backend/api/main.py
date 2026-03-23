@@ -4,7 +4,8 @@ import threading
 
 from database import init_db, SessionLocal, Stock
 from api.routers import stocks, news, analysis, predict, screener, market
-from ingest.sync import sync_ohlc_to_db, DEFAULT_STOCKS
+from ingest.sync import sync_ohlc_to_db, DEFAULT_STOCKS, seed_stocks
+from ingest.scheduler import start_scheduler, stop_scheduler
 
 app = FastAPI(title="Astock API", version="2.0.0",
               description="A 股市场事件驱动分析与选股工具 API")
@@ -38,28 +39,22 @@ def startup():
     # Initialize database
     init_db()
 
-    # Ensure default stock pool is seeded
-    db = SessionLocal()
-    try:
-        for sym, name, sector, mkt in DEFAULT_STOCKS:
-            stock = db.query(Stock).filter(Stock.symbol == sym).first()
-            if not stock:
-                stock = Stock(
-                    symbol=sym,
-                    name=name,
-                    sector=sector,
-                    market=mkt,
-                )
-                db.add(stock)
-        db.commit()
-    finally:
-        db.close()
+    # Seed ALL stocks from the pool (300+)
+    seed_stocks()
+
+    # Start background scheduler for periodic OHLC + news sync
+    start_scheduler()
 
     # Background pre-sync first 5 core stocks (avoid startup timeout)
     core_stocks = DEFAULT_STOCKS[:5]
     for sym, name, sector, mkt in core_stocks:
         t = threading.Thread(target=_sync_stock_bg, args=(sym, mkt), daemon=True)
         t.start()
+
+
+@app.on_event("shutdown")
+def shutdown():
+    stop_scheduler()
 
 
 @app.get("/api/health")

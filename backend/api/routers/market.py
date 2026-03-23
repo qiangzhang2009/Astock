@@ -379,3 +379,142 @@ def _get_limit_from_screener(limit: int, limit_up: bool = True):
         return [dict(r) for r in rows]
     except Exception:
         return []
+
+
+@router.get("/board/{board_code}")
+def get_board_stocks(
+    board_code: str,
+    sort_by: str = Query("change_pct", description="change_pct/volume/turnover"),
+    sort_order: str = Query("desc"),
+    limit: int = Query(30, ge=1, le=100),
+):
+    """
+    获取指定板块内的个股行情（东方财富板块详情）
+    board_code: 东方财富板块代码（如 f12 字段值）
+    """
+    url = (
+        f"https://push2.eastmoney.com/api/qt/clist/get"
+        f"?pn=1&pz={limit}&po=1&np=1&fltt=2&invt=2&fid=f3"
+        f"&fs=b:{board_code}+f:!50&fields=f2,f3,f4,f5,f6,f7,f10,f12,f14,f15,f16,f17,f18,f20,f21,f23,f62"
+    )
+    data = _em_fetch(url)
+    if not data:
+        return {"count": 0, "results": [], "error": "Failed to fetch board data"}
+
+    items = data.get("data", {}).get("diff", []) or data.get("data", {}).get("list", []) or []
+    results = []
+    for item in items:
+        try:
+            symbol = str(item.get("f12", ""))
+            market_prefix = "sh" if symbol.startswith(("6", "9")) else "sz"
+            results.append({
+                "symbol": symbol,
+                "name": item.get("f14", ""),
+                "price": item.get("f2", 0),
+                "change_pct": item.get("f3", 0),
+                "high": item.get("f15", 0),
+                "low": item.get("f16", 0),
+                "open": item.get("f17", 0),
+                "prev_close": item.get("f18", 0),
+                "volume": int(item.get("f5", 0) or 0),
+                "turnover": int(item.get("f6", 0) or 0),
+                "amplitude": item.get("f7", 0),
+                "market": market_prefix,
+                "lead_flow": int(item.get("f62", 0) or 0),
+            })
+        except Exception:
+            continue
+
+    return {"count": len(results), "results": results}
+
+
+@router.get("/summary")
+def get_market_summary():
+    """
+    获取市场综合概览（涨跌家数、涨停数、北向资金等）
+    """
+    # 东方财富大盘概况 API
+    summary_url = "https://push2.eastmoney.com/api/qt/stock/get?secid=1.000001,0.399001,0.399006,1.000688&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f170"
+    data = _em_fetch(summary_url)
+    summary = {
+        "up_count": 0,
+        "down_count": 0,
+        "limit_up_count": 0,
+        "limit_down_count": 0,
+        "total_volume": 0,
+        "total_turnover": 0,
+        "board_count": 0,
+        "advancing_boards": 0,
+        "declining_boards": 0,
+    }
+
+    if data:
+        try:
+            diff = data.get("data", {}).get("diff", [])
+            if not isinstance(diff, list):
+                diff = [data.get("data", {})]
+            for item in diff:
+                if item.get("f43"):  # price
+                    prev = item.get("f60", 0) or 0
+                    cur = item.get("f43", 0) or 0
+                    if prev and cur:
+                        pct = (cur - prev) / prev * 100
+                        if pct > 0: summary["advancing_boards"] += 1
+                        else: summary["declining_boards"] += 1
+        except Exception:
+            pass
+
+    # 涨跌家数
+    count_url = "https://push2.eastmoney.com/api/qt/stock/get?secid=1.000001&fields=f136,f137"
+    cnt_data = _em_fetch(count_url)
+    if cnt_data:
+        try:
+            d = cnt_data.get("data", {})
+            summary["up_count"] = d.get("f136", 0) or 0
+            summary["down_count"] = d.get("f137", 0) or 0
+        except Exception:
+            pass
+
+    # 涨停跌停数（东方财富统计）
+    lu_data = _em_fetch(
+        "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&po=1&np=1&fltt=2&invt=2&fid=f3"
+        "&fs=m:0+t:6,m:0+t:13,m:1+t:2,m:1+t:23&fields=f2,f3"
+    )
+    if lu_data:
+        try:
+            items = lu_data.get("data", {}).get("diff", []) or []
+            limit_up = sum(1 for i in items if (i.get("f3", 0) or 0) >= 9.0)
+            limit_down = sum(1 for i in items if (i.get("f3", 0) or 0) <= -9.0)
+            summary["limit_up_count"] = limit_up
+            summary["limit_down_count"] = limit_down
+        except Exception:
+            pass
+
+    return summary
+
+
+@router.get("/sparkline/{symbol}")
+def get_sparkline(symbol: str):
+    """
+    获取个股迷你K线（最近30天，简洁数据）
+    用于市场概览中的迷你图
+    """
+    conn = get_conn()
+    try:
+        rows = conn.execute("""
+            SELECT date, close, change_pct
+            FROM daily_kline
+            WHERE code = ?
+            ORDER BY date DESC
+            LIMIT 30
+        """, (symbol,)).fetchall()
+        conn.close()
+        if not rows:
+            return {"symbol": symbol, "data": []}
+        return {
+            "symbol": symbol,
+            "data": [{"date": r["date"], "close": r["close"], "change_pct": r["change_pct"]} for r in reversed(rows)]
+        }
+    except Exception:
+        conn.close()
+        return {"symbol": symbol, "data": []}
