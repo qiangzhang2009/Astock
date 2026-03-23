@@ -36,7 +36,14 @@ def list_stocks():
            FROM stocks ORDER BY symbol"""
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+    if not result:
+        # 如果数据库为空，返回默认股票列表
+        result = [
+            {"symbol": code, "name": name, "sector": sector, "market": market}
+            for code, name, sector, market in DEFAULT_STOCKS
+        ]
+    return result
 
 
 @router.get("/search")
@@ -104,11 +111,19 @@ def get_stock_info(symbol: str):
     conn.close()
 
     if not row:
-        raise HTTPException(status_code=404, detail=f"股票 {symbol} 不在跟踪列表中")
+        # 尝试从 DEFAULT_STOCKS 查找
+        for code, name, sector, market in DEFAULT_STOCKS:
+            if code == symbol:
+                info = {"symbol": code, "name": name, "sector": sector, "market": market}
+                break
+        else:
+            raise HTTPException(status_code=404, detail=f"股票 {symbol} 不在跟踪列表中")
+    else:
+        info = dict(row)
 
-    info = dict(row)
     try:
-        quote = fetch_realtime_quote(symbol, info.get("market", "sh"))
+        market = info.get("market", "sh")
+        quote = fetch_realtime_quote(symbol, market)
         if quote:
             info.update(quote)
     except Exception:
@@ -121,6 +136,15 @@ def get_stock_info(symbol: str):
 def sync_stock(symbol: str):
     """手动触发 K 线同步"""
     market = "sh" if symbol.startswith("6") else ("bj" if symbol.startswith("8") else "sz")
+    # 确保股票在 DB 中
+    conn = get_conn()
+    conn.execute(
+        """INSERT OR IGNORE INTO stocks (symbol, name, sector, market)
+           SELECT ?, COALESCE((SELECT name FROM stocks WHERE symbol=?), ''), '', ?""",
+        (symbol, symbol, market)
+    )
+    conn.commit()
+    conn.close()
     try:
         rows = sync_ohlc_to_db(symbol, market)
         return {"symbol": symbol, "rows_synced": rows, "status": "ok"}
