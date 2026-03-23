@@ -1,13 +1,8 @@
 """
-GET /api/predict/{symbol}/forecast        — XGBoost 预测
-GET /api/predict/{symbol}/similar-days    — 相似历史区间
+GET /api/predict/{symbol}/forecast        — 择时预测
+GET /api/predict/{symbol}/similar-days   — 相似历史区间
 """
 from fastapi import APIRouter, HTTPException, Query
-from typing import Optional
-import json
-import pandas as pd
-
-from database import get_conn
 from ml.inference import generate_forecast, find_similar_periods
 
 router = APIRouter()
@@ -15,7 +10,7 @@ router = APIRouter()
 
 @router.get("/{symbol}/forecast")
 def get_forecast(symbol: str, window: int = Query(7, ge=7, le=60)):
-    """获取股票预测"""
+    """Get stock forecast."""
     forecast = generate_forecast(symbol, window_days=window)
     if not forecast:
         return _empty_forecast(symbol, window)
@@ -24,13 +19,13 @@ def get_forecast(symbol: str, window: int = Query(7, ge=7, le=60)):
 
 @router.get("/{symbol}/similar-days")
 def get_similar_days(symbol: str, date: str = Query(...)):
-    """查找历史相似交易日"""
+    """Find historically similar trading days."""
     similar = find_similar_periods(symbol, target_date=date)
     return similar
 
 
 def _empty_forecast(symbol: str, window: int):
-    """返回空预测（当数据不足时）"""
+    """Return empty forecast when data is insufficient."""
     return {
         "symbol": symbol,
         "window_days": window,

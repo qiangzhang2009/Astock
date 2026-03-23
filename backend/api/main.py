@@ -1,13 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import asyncio
 import threading
 
-from database import init_db, get_conn
-from api.routers import stocks, news, analysis, predict, screener
-from ingest.sina_client import DEFAULT_STOCKS
+from database import init_db, SessionLocal, Stock
+from api.routers import stocks, news, analysis, predict, screener, market
+from ingest.sync import sync_ohlc_to_db, DEFAULT_STOCKS
 
-app = FastAPI(title="Astock API", version="1.0.0",
+app = FastAPI(title="Astock API", version="2.0.0",
               description="A 股市场事件驱动分析与选股工具 API")
 
 app.add_middleware(
@@ -23,47 +22,56 @@ app.include_router(news.router, prefix="/api/news", tags=["news"])
 app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
 app.include_router(predict.router, prefix="/api/predict", tags=["predict"])
 app.include_router(screener.router, prefix="/api/screener", tags=["screener"])
+app.include_router(market.router, prefix="/api/market", tags=["market"])
 
 
 def _sync_stock_bg(sym: str, market: str):
-    """后台同步单只股票 K 线（避免阻塞启动）"""
+    """Background sync single stock OHLC (avoid blocking startup)."""
     try:
-        from ingest.sina_client import sync_ohlc_to_db
         sync_ohlc_to_db(sym, market)
     except Exception as e:
-        print(f"后台同步失败 {sym}: {e}")
+        print(f"[STARTUP] Background sync failed {sym}: {e}")
 
 
 @app.on_event("startup")
 def startup():
+    # Initialize database
     init_db()
-    # 确保默认股票列表已初始化
-    conn = get_conn()
-    for sym, name, sector, market in DEFAULT_STOCKS:
-        conn.execute(
-            """INSERT OR IGNORE INTO stocks (symbol, name, sector, market)
-               VALUES (?, ?, ?, ?)""",
-            (sym, name, sector, market)
-        )
-    conn.commit()
-    conn.close()
-    # 后台预同步前 5 只核心股票（避免启动超时）
+
+    # Ensure default stock pool is seeded
+    db = SessionLocal()
+    try:
+        for sym, name, sector, mkt in DEFAULT_STOCKS:
+            stock = db.query(Stock).filter(Stock.symbol == sym).first()
+            if not stock:
+                stock = Stock(
+                    symbol=sym,
+                    name=name,
+                    sector=sector,
+                    market=mkt,
+                )
+                db.add(stock)
+        db.commit()
+    finally:
+        db.close()
+
+    # Background pre-sync first 5 core stocks (avoid startup timeout)
     core_stocks = DEFAULT_STOCKS[:5]
-    for sym, name, sector, market in core_stocks:
-        t = threading.Thread(target=_sync_stock_bg, args=(sym, market), daemon=True)
+    for sym, name, sector, mkt in core_stocks:
+        t = threading.Thread(target=_sync_stock_bg, args=(sym, mkt), daemon=True)
         t.start()
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "Astock API", "version": "1.0.0"}
+    return {"status": "ok", "service": "Astock API", "version": "2.0.0"}
 
 
 @app.get("/api")
 def root():
     return {
         "name": "Astock API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "description": "A 股市场事件驱动分析与选股工具",
         "docs": "/docs",
     }

@@ -1,4 +1,4 @@
-name: Deploy Frontend
+name: Deploy Frontend to Vercel
 
 on:
   push:
@@ -25,6 +25,8 @@ jobs:
 
       - name: Build frontend
         run: cd frontend && npm run build
+        env:
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
 
       - name: Deploy to Vercel
         uses: amondnet/vercel-action@v25

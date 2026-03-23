@@ -14,6 +14,30 @@ interface Props {
   onDayClick: (date: string) => void;
 }
 
+// MA line configs
+const MA_CONFIGS = [
+  { key: 'ma5', label: 'MA5', period: 5, color: '#f0883e' },
+  { key: 'ma10', label: 'MA10', period: 10, color: '#58a6ff' },
+  { key: 'ma20', label: 'MA20', period: 20, color: '#bc8cff' },
+  { key: 'ma60', label: 'MA60', period: 60, color: '#3fb950' },
+];
+
+function computeMA(data: OHLCRow[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) {
+      result.push(null);
+    } else {
+      let sum = 0;
+      for (let j = 0; j < period; j++) {
+        sum += data[i - j].close;
+      }
+      result.push(sum / period);
+    }
+  }
+  return result;
+}
+
 export default function CandlestickChart({
   symbol, lockedNewsId, highlightedArticleIds, highlightColor,
   onHover, onRangeSelect, onArticleSelect, onDayClick,
@@ -24,13 +48,15 @@ export default function CandlestickChart({
   const [particles, setParticles] = useState<NewsParticle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [showMA, setShowMA] = useState({ ma5: true, ma10: true, ma20: true, ma60: false });
+  const [showVolume, setShowVolume] = useState(true);
   const [brushExtent, setBrushExtent] = useState<[Date, Date] | null>(null);
 
   useEffect(() => {
     setLoading(true);
     setError('');
     Promise.all([
-      axios.get(`/api/stocks/${symbol}/ohlc?days=365`).then((r) => r.data),
+      axios.get(`/api/stocks/${symbol}/ohlc?days=730`).then((r) => r.data),
       axios.get(`/api/news/${symbol}/particles?days=365`).then((r) => r.data).catch(() => []),
     ])
       .then(([ohlcData, particleData]) => {
@@ -52,7 +78,7 @@ export default function CandlestickChart({
   useEffect(() => {
     if (!data.length || !svgRef.current || !containerRef.current) return;
     drawChart();
-  }, [data, particles, lockedNewsId, highlightedArticleIds, highlightColor, brushExtent]);
+  }, [data, particles, lockedNewsId, highlightedArticleIds, highlightColor, brushExtent, showMA, showVolume]);
 
   const drawChart = useCallback(() => {
     const container = containerRef.current!;
@@ -60,15 +86,23 @@ export default function CandlestickChart({
     svg.selectAll('*').remove();
 
     const width = container.clientWidth;
-    const height = container.clientHeight;
-    const margin = { top: 20, right: 60, bottom: 30, left: 60 };
+    const volHeight = showVolume ? 80 : 0;
+    const priceHeight = container.clientHeight - volHeight - 10;
+    const margin = { top: 10, right: 60, bottom: 30, left: 60 };
     const innerW = width - margin.left - margin.right;
-    const innerH = height - margin.top - margin.bottom;
+    const innerH = priceHeight - margin.top - margin.bottom;
+    const volInnerH = volHeight - 20;
 
     if (innerW <= 0 || innerH <= 0) return;
 
     const displayData = data.filter((d) => d.close != null);
     if (!displayData.length) return;
+
+    // Compute MA
+    const maMap: Record<string, (number | null)[]> = {};
+    MA_CONFIGS.forEach(({ key, period }) => {
+      maMap[key] = computeMA(displayData, period);
+    });
 
     const parsedDates = displayData.map((d) => new Date(d.date + 'T00:00:00'));
 
@@ -81,9 +115,12 @@ export default function CandlestickChart({
     const yMax = d3.max(displayData, (d) => d.high)! * 1.002;
     const yScale = d3.scaleLinear().domain([yMin, yMax]).range([innerH, 0]);
 
+    const maxVol = d3.max(displayData, (d) => d.volume) || 1;
+    const volScale = d3.scaleLinear().domain([0, maxVol]).range([volInnerH, 0]);
+
     const g = svg
       .attr('width', width)
-      .attr('height', height)
+      .attr('height', container.clientHeight)
       .append('g')
       .attr('transform', `translate(${margin.left},${margin.top})`);
 
@@ -106,7 +143,7 @@ export default function CandlestickChart({
     g.selectAll('.domain').style('stroke', '#30363d');
     g.selectAll('.tick line').style('stroke', '#30363d');
 
-    // X Axis (show dates)
+    // X Axis
     g.append('g')
       .attr('transform', `translate(0,${innerH})`)
       .call(d3.axisBottom(
@@ -117,6 +154,51 @@ export default function CandlestickChart({
       .style('font-size', '10px');
     g.selectAll('.domain').style('stroke', '#30363d');
     g.selectAll('.tick line').style('stroke', '#30363d');
+
+    // Volume bars (below price chart)
+    if (showVolume) {
+      const volG = g.append('g').attr('class', 'volume-bars').attr('transform', `translate(0,${innerH + 5})`);
+      displayData.forEach((d) => {
+        const x = xScale(d.date)!;
+        const barH = volInnerH - volScale(d.volume);
+        volG.append('rect')
+          .attr('x', x)
+          .attr('y', volScale(d.volume))
+          .attr('width', xScale.bandwidth())
+          .attr('height', barH)
+          .style('fill', (d.change_pct || 0) >= 0 ? 'rgba(38,166,154,0.25)' : 'rgba(239,83,80,0.25)');
+      });
+    }
+
+    // MA Lines
+    MA_CONFIGS.forEach(({ key, color }) => {
+      if (!showMA[key as keyof typeof showMA]) return;
+      const maValues = maMap[key];
+      const lineGen = d3.line<{ x: number; y: number }>()
+        .x((d) => d.x)
+        .y((d) => d.y)
+        .defined((d) => d.y !== null)
+        .curve(d3.curveMonotoneX);
+
+      const points: { x: number; y: number }[] = [];
+      maValues.forEach((val, i) => {
+        if (val !== null) {
+          const x = (xScale(displayData[i].date) ?? 0) + xScale.bandwidth() / 2;
+          points.push({ x, y: yScale(val) });
+        }
+      });
+
+      if (points.length > 0) {
+        g.append('path')
+          .datum(points)
+          .attr('class', `ma-line ma-${key}`)
+          .attr('d', lineGen)
+          .style('fill', 'none')
+          .style('stroke', color)
+          .style('stroke-width', 1.5)
+          .style('opacity', 0.85);
+      }
+    });
 
     // Candlesticks
     const candleGroup = g.append('g').attr('class', 'candles');
@@ -143,7 +225,7 @@ export default function CandlestickChart({
         .style('stroke', color)
         .style('stroke-width', 0.5);
 
-      // Limit up/down markers
+      // Limit zone
       if (d.limit_up) {
         candleGroup.append('rect')
           .attr('x', xScale(d.date)!).attr('y', yScale(d.high))
@@ -241,13 +323,55 @@ export default function CandlestickChart({
       .attr('class', 'brush')
       .call(brush as any);
 
-  }, [data, particles, lockedNewsId, highlightedArticleIds, highlightColor, brushExtent, onHover, onRangeSelect, onArticleSelect, onDayClick]);
+    // MA Legend
+    const legendG = g.append('g').attr('class', 'ma-legend').attr('transform', `translate(${innerW - 120}, -5)`);
+    let legendX = 0;
+    MA_CONFIGS.forEach(({ key, label, color }) => {
+      if (!showMA[key as keyof typeof showMA]) return;
+      legendG.append('line')
+        .attr('x1', legendX).attr('x2', legendX + 12)
+        .attr('y1', 5).attr('y2', 5)
+        .style('stroke', color).style('stroke-width', 1.5);
+      legendG.append('text')
+        .attr('x', legendX + 15).attr('y', 9)
+        .style('fill', color).style('font-size', '10px')
+        .style('font-family', 'Menlo, monospace')
+        .text(label);
+      legendX += 50;
+    });
+
+  }, [data, particles, lockedNewsId, highlightedArticleIds, highlightColor, brushExtent, showMA, showVolume, onHover, onRangeSelect, onArticleSelect, onDayClick]);
 
   if (loading) {
     return (
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-        <div className="spinner" style={{ marginRight: 8 }} />
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13, gap: 8 }}>
+        <div className="spinner" />
         加载 K 线数据...
+        {/* MA toggles while loading */}
+        <div style={{ marginLeft: 16, display: 'flex', gap: 6, alignItems: 'center' }}>
+          {MA_CONFIGS.map(({ key, label, color }) => (
+            <button key={key} onClick={() => setShowMA((m) => ({ ...m, [key]: !m[key as keyof typeof m] }))}
+              style={{
+                background: showMA[key as keyof typeof showMA] ? `${color}22` : 'var(--bg-tertiary)',
+                border: `1px solid ${showMA[key as keyof typeof showMA] ? color : 'var(--border-color)'}`,
+                borderRadius: 4, padding: '2px 6px', fontSize: 10,
+                color: showMA[key as keyof typeof showMA] ? color : 'var(--text-muted)',
+                cursor: 'pointer',
+              }}>
+              {label}
+            </button>
+          ))}
+          <button onClick={() => setShowVolume((v) => !v)}
+            style={{
+              background: showVolume ? 'rgba(38,166,154,0.2)' : 'var(--bg-tertiary)',
+              border: `1px solid ${showVolume ? '#26a69a' : 'var(--border-color)'}`,
+              borderRadius: 4, padding: '2px 6px', fontSize: 10,
+              color: showVolume ? '#26a69a' : 'var(--text-muted)',
+              cursor: 'pointer',
+            }}>
+            VOL
+          </button>
+        </div>
       </div>
     );
   }
@@ -264,6 +388,36 @@ export default function CandlestickChart({
   return (
     <div ref={containerRef} style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
       <svg ref={svgRef} style={{ width: '100%', height: '100%' }} />
+      {/* Chart controls */}
+      <div style={{
+        position: 'absolute', top: 4, right: 68,
+        display: 'flex', gap: 4, zIndex: 10,
+      }}>
+        {MA_CONFIGS.map(({ key, label, color }) => (
+          <button key={key} onClick={() => setShowMA((m) => ({ ...m, [key]: !m[key as keyof typeof m] }))}
+            style={{
+              background: showMA[key as keyof typeof showMA] ? `${color}33` : 'rgba(33,38,45,0.8)',
+              border: `1px solid ${showMA[key as keyof typeof showMA] ? color : '#30363d'}`,
+              borderRadius: 4, padding: '2px 6px', fontSize: 10,
+              color: showMA[key as keyof typeof showMA] ? color : '#6e7681',
+              cursor: 'pointer',
+              fontFamily: 'Menlo, monospace',
+            }}>
+            {label}
+          </button>
+        ))}
+        <button onClick={() => setShowVolume((v) => !v)}
+          style={{
+            background: showVolume ? 'rgba(38,166,154,0.3)' : 'rgba(33,38,45,0.8)',
+            border: `1px solid ${showVolume ? '#26a69a' : '#30363d'}`,
+            borderRadius: 4, padding: '2px 6px', fontSize: 10,
+            color: showVolume ? '#26a69a' : '#6e7681',
+            cursor: 'pointer',
+            fontFamily: 'Menlo, monospace',
+          }}>
+          VOL
+        </button>
+      </div>
     </div>
   );
 }

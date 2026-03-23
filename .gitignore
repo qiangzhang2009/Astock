@@ -18,3 +18,7 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .gstack/
+.vercel
+*.tsbuildinfo
+frontend/dist/
+railway.json

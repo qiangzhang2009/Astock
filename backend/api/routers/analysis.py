@@ -39,8 +39,8 @@ def analyze_range(req: RangeAnalysisRequest):
                l1.reason_growth, l1.reason_decrease,
                na.trade_date, na.ret_t0, na.ret_t1
         FROM news_aligned na
-        JOIN news_raw nr ON na.news_id = nr.id
         JOIN layer1_results l1 ON na.news_id = l1.news_id AND na.symbol = l1.symbol
+        JOIN news_raw nr ON na.news_id = nr.id
         WHERE na.symbol = ? AND na.trade_date >= ? AND na.trade_date <= ?
         ORDER BY na.trade_date DESC
         LIMIT 30
@@ -52,8 +52,8 @@ def analyze_range(req: RangeAnalysisRequest):
     price_rows = conn.execute(
         """
         SELECT date, open, high, low, close, change_pct, volume
-        FROM ohlc
-        WHERE symbol = ? AND date >= ? AND date <= ?
+        FROM daily_kline
+        WHERE code = ? AND date >= ? AND date <= ?
         ORDER BY date
         """,
         (req.symbol, req.start_date, req.end_date)
@@ -88,7 +88,7 @@ def analyze_range(req: RangeAnalysisRequest):
         "news_count": len(news_list),
         "analysis": analysis,
         "prices": price_list,
-        "news": news_list[:10],  # 只返回前 10 条
+        "news": news_list[:10],
     }
 
 
@@ -104,8 +104,8 @@ def deep_analysis(req: DeepAnalysisRequest):
                l1.reason_growth, l1.reason_decrease,
                na.ret_t0, na.ret_t1, na.ret_t3, na.ret_t5
         FROM news_aligned na
-        JOIN news_raw nr ON na.news_id = nr.id
         JOIN layer1_results l1 ON na.news_id = l1.news_id AND na.symbol = l1.symbol
+        JOIN news_raw nr ON na.news_id = nr.id
         WHERE na.news_id = ? AND na.symbol = ?
         """,
         (req.news_id, req.symbol)

@@ -1,8 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://astock-api.onrender.com';
-axios.defaults.baseURL = API_BASE;
+const API_BASE = (
+  import.meta.env.VITE_API_BASE ||
+  (typeof window !== 'undefined' && (window as any).__ENV__?.VITE_API_BASE) ||
+  ''
+);
+if (API_BASE) {
+  axios.defaults.baseURL = API_BASE;
+}
+
 import StockSelector from './components/StockSelector';
 import CandlestickChart from './components/CandlestickChart';
 import NewsPanel from './components/NewsPanel';
@@ -13,6 +20,7 @@ import RangeNewsPanel from './components/RangeNewsPanel';
 import SimilarDaysPanel from './components/SimilarDaysPanel';
 import PredictionPanel from './components/PredictionPanel';
 import ScreenerPanel from './components/ScreenerPanel';
+import MarketOverview from './components/MarketOverview';
 import './App.css';
 
 interface RangeSelection {
@@ -29,6 +37,7 @@ interface ArticleSelection {
 }
 
 type RightPanelType = 'news' | 'range-analysis' | 'similar' | 'screener';
+type TabType = 'chart' | 'market';
 
 function App() {
   const [activeTickers, setActiveTickers] = useState<string[]>([]);
@@ -46,6 +55,7 @@ function App() {
   const [activeCategoryIds, setActiveCategoryIds] = useState<string[]>([]);
   const [activeCategoryColor, setActiveCategoryColor] = useState<string | null>(null);
   const [rightPanel, setRightPanel] = useState<RightPanelType>('news');
+  const [activeTab, setActiveTab] = useState<TabType>('chart');
   const chartAreaRef = useRef<HTMLDivElement>(null);
   const [chartRect, setChartRect] = useState<DOMRect | undefined>(undefined);
 
@@ -204,12 +214,26 @@ function App() {
           onSelect={handleSelectSymbol}
           onAdd={handleAddTicker}
         />
-        {selectedRange ? (
+        <div className="tab-bar">
+          <button
+            className={`tab-btn ${activeTab === 'chart' ? 'active' : ''}`}
+            onClick={() => setActiveTab('chart')}
+          >
+            行情分析
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'market' ? 'active' : ''}`}
+            onClick={() => setActiveTab('market')}
+          >
+            市场概览
+          </button>
+        </div>
+        {activeTab === 'chart' && selectedRange ? (
           <div className="header-ohlc">
             <span className="ohlc-date">{selectedRange.startDate} ~ {selectedRange.endDate}</span>
             <span className="range-badge">区间已选</span>
           </div>
-        ) : hoveredOhlc ? (
+        ) : activeTab === 'chart' && hoveredOhlc ? (
           <div className="header-ohlc">
             <span className="ohlc-date">{hoveredOhlc.date}</span>
             <span className="ohlc-label">开</span>
@@ -242,51 +266,55 @@ function App() {
         </div>
       </header>
 
-      <main className="app-main">
-        <div className="chart-area" ref={chartAreaRef}>
-          {selectedSymbol ? (
-            <>
-              <CandlestickChart
-                symbol={selectedSymbol}
-                lockedNewsId={lockedArticle?.newsId ?? null}
-                highlightedArticleIds={activeCategoryIds.length > 0 ? activeCategoryIds : null}
-                highlightColor={activeCategoryColor}
-                onHover={handleHover}
-                onRangeSelect={handleRangeSelect}
-                onArticleSelect={handleArticleSelect}
-                onDayClick={handleDayClick}
-              />
-              {selectedRange && !rangeQuestion && (
-                <RangeQueryPopup
-                  range={selectedRange}
-                  chartRect={chartRect}
-                  onAsk={handleRangeAsk}
-                  onClose={() => setSelectedRange(null)}
+      {activeTab === 'market' ? (
+        <MarketOverview onSelectStock={handleSelectSymbol} onSwitchToChart={() => setActiveTab('chart')} />
+      ) : (
+        <main className="app-main">
+          <div className="chart-area" ref={chartAreaRef}>
+            {selectedSymbol ? (
+              <>
+                <CandlestickChart
+                  symbol={selectedSymbol}
+                  lockedNewsId={lockedArticle?.newsId ?? null}
+                  highlightedArticleIds={activeCategoryIds.length > 0 ? activeCategoryIds : null}
+                  highlightColor={activeCategoryColor}
+                  onHover={handleHover}
+                  onRangeSelect={handleRangeSelect}
+                  onArticleSelect={handleArticleSelect}
+                  onDayClick={handleDayClick}
                 />
-              )}
-            </>
-          ) : (
-            <div className="chart-placeholder">搜索并选择一只 A 股查看 K 线</div>
-          )}
-        </div>
-
-        {selectedSymbol && (
-          <div className="prediction-area">
-            <PredictionPanel symbol={selectedSymbol} />
+                {selectedRange && !rangeQuestion && (
+                  <RangeQueryPopup
+                    range={selectedRange}
+                    chartRect={chartRect}
+                    onAsk={handleRangeAsk}
+                    onClose={() => setSelectedRange(null)}
+                  />
+                )}
+              </>
+            ) : (
+              <div className="chart-placeholder">搜索并选择一只 A 股查看 K 线</div>
+            )}
           </div>
-        )}
 
-        <div className="news-area">
           {selectedSymbol && (
-            <NewsCategoryPanel
-              symbol={selectedSymbol}
-              activeCategory={activeCategory}
-              onCategoryChange={handleCategoryChange}
-            />
+            <div className="prediction-area">
+              <PredictionPanel symbol={selectedSymbol} />
+            </div>
           )}
-          {renderRightPanel()}
-        </div>
-      </main>
+
+          <div className="news-area">
+            {selectedSymbol && (
+              <NewsCategoryPanel
+                symbol={selectedSymbol}
+                activeCategory={activeCategory}
+                onCategoryChange={handleCategoryChange}
+              />
+            )}
+            {renderRightPanel()}
+          </div>
+        </main>
+      )}
     </div>
   );
 }

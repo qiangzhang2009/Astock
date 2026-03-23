@@ -10,12 +10,25 @@
 
 import re
 import json
-import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
 import pandas as pd
+
+# 导出同步函数
+from ingest.sync import sync_ohlc_to_pg, DEFAULT_STOCKS, fetch_ohlc, get_full_symbol
+
+# 保留旧接口别名以兼容
+def sync_ohlc_to_db(symbol: str, market: str = "sh") -> int:
+    """兼容旧接口"""
+    return sync_ohlc_to_pg(symbol, market)
+
+
+def seed_default_stocks():
+    """兼容旧接口 - 初始化默认股票池"""
+    from ingest.sync import seed_stocks as _seed
+    _seed()
 
 
 # 默认关注的优质 A 股股票池
@@ -367,63 +380,3 @@ def fetch_northbound_flow() -> dict:
         "shenzhen_connect": 0,
         "timestamp": datetime.now().isoformat(),
     }
-
-
-# ─────────────────────────────────────────────
-# 6. 数据库同步
-# ─────────────────────────────────────────────
-def seed_default_stocks(conn: sqlite3.Connection):
-    """初始化默认股票池"""
-    for sym, name, sector, market in DEFAULT_STOCKS:
-        conn.execute(
-            """INSERT OR IGNORE INTO stocks (symbol, name, sector, market)
-               VALUES (?, ?, ?, ?)""",
-            (sym, name, sector, market)
-        )
-    conn.commit()
-
-
-def sync_ohlc_to_db(symbol: str, market: str = "sh") -> int:
-    """
-    获取K线数据并同步到数据库
-    返回: 插入/更新行数
-    """
-    from database import get_conn
-
-    df = fetch_ohlc(symbol, market)
-    if df.empty:
-        return 0
-
-    conn = get_conn()
-    rows = 0
-    for _, row in df.iterrows():
-        conn.execute(
-            """INSERT OR REPLACE INTO ohlc
-               (symbol, date, open, high, low, close, volume, turnover, change_pct, limit_up, limit_down, amplitude)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                symbol,
-                row["date"],
-                row["open"],
-                row["high"],
-                row["low"],
-                row["close"],
-                int(row["volume"]),
-                int(row["turnover"]),
-                row["change_pct"],
-                int(row["limit_up"]),
-                int(row["limit_down"]),
-                row["amplitude"],
-            )
-        )
-        rows += 1
-
-    conn.execute(
-        "UPDATE stocks SET last_ohlc_fetch = ? WHERE symbol = ?",
-        (datetime.now().isoformat(), symbol)
-    )
-    conn.commit()
-    conn.close()
-
-    print(f"[SINA] 已同步 {symbol} {rows} 条K线")
-    return rows
