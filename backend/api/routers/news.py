@@ -1,15 +1,17 @@
 """
-GET /api/news/{symbol}             — 新闻列表（DB → 新浪回退）
-GET /api/news/{symbol}/particles  — K线图新闻粒子（DB → 新浪回退）
+GET /api/news/{symbol}             — 新闻列表（DB → East Money 回退）
+GET /api/news/{symbol}/particles  — K线图新闻粒子（DB → East Money 回退）
 GET /api/news/{symbol}/categories — 新闻分类统计
 GET /api/news/{symbol}/range      — 区间新闻
 POST /api/news/{symbol}/fetch     — 抓取新闻
 GET /api/news/{symbol}/stats       — 新闻统计
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 import httpx
 import re
 import hashlib
+import json
+import urllib.parse
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -22,12 +24,6 @@ EM_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Referer": "https://www.eastmoney.com/",
     "Accept": "application/json, text/plain, */*",
-}
-
-SINA_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Referer": "https://finance.sina.com.cn/",
-    "Accept-Charset": "GBK,utf-8;q=0.7,*;q=0.3",
 }
 
 
@@ -58,18 +54,15 @@ def _parse_date(date_str: str) -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def _get_trade_date(pub_date_str: str) -> str:
-    """Find the nearest trading day >= pub_date."""
-    return _parse_date(pub_date_str)
-
-
-# ─── Sina News Fallback ────────────────────────────────────────────────────────
+# ─── East Money News Fallback ───────────────────────────────────────────────────
 def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
-    """East Money search API as fallback when DB is empty."""
-    import urllib.parse
+    """
+    East Money 搜索 API 作为回退，当数据库为空时实时获取新闻。
+    支持股票公告、市场新闻、概念新闻。
+    """
     market = "sh" if symbol.startswith("6") or symbol.startswith("9") else "sz"
 
-    # Build JSONP callback parameter
+    # 构建搜索参数
     param_dict = {
         "uid": "",
         "keyword": symbol,
@@ -84,11 +77,10 @@ def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
                 "pageIndex": 1,
                 "pageSize": limit,
                 "preTag": '<span class=">',
-                "postTag": '</span>',
+                "postTag": "</span>",
             }
         }
     }
-    import json
     param_str = json.dumps(param_dict, ensure_ascii=False)
     encoded = urllib.parse.quote(param_str)
     url = f"https://search-api-web.eastmoney.com/search/jsonp?cb=&param={encoded}"
@@ -97,47 +89,57 @@ def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
         with httpx.Client(timeout=12, follow_redirects=True) as client:
             resp = client.get(url, headers=EM_HEADERS)
             resp.raise_for_status()
-            text = resp.text
+            raw = resp.text
     except Exception as e:
-        print(f"[NEWS] EM fallback error: {e}")
-        return []
-
-    try:
-        # Parse JSONP response: ({"code":0, ...})
-        json_str = text[1:] if text.startswith("(") else text
-        data = json.loads(json_str)
-        items = data.get("result", {}).get("cmsArticle", []) or []
-    except Exception as e:
-        print(f"[NEWS] EM parse error: {e}")
+        print(f"[NEWS] EM fallback fetch error: {e}")
         return []
 
     results = []
-    for item in items:
-        title = re.sub(r'<[^>]+>', '', item.get("title", "")).strip()
-        if not title:
-            continue
-        news_id = hashlib.md5((title + item.get("date", "")).encode()).hexdigest()[:24]
-        pub_date = item.get("date", "")[:10]
-        if not pub_date:
-            pub_date = datetime.now().strftime("%Y-%m-%d")
 
-        sentiment = _rule_based_sentiment(symbol, title, "")
+    # 解析 NDJSON 格式（每行一个 JSON 对象）
+    lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+    for line in lines:
+        if line.startswith("("):
+            line = line[1:]
+        if line.startswith("{"):
+            try:
+                data = json.loads(line)
+                items = data.get("result", {}).get("cmsArticle", []) or []
+                for item in items:
+                    title_raw = item.get("title", "")
+                    title = re.sub(r"<[^>]+>", "", title_raw).strip()
+                    if not title:
+                        continue
+                    news_id = hashlib.md5(
+                        (title + item.get("date", "")).encode()
+                    ).hexdigest()[:24]
+                    pub_date = item.get("date", "")[:10]
+                    if not pub_date:
+                        pub_date = datetime.now().strftime("%Y-%m-%d")
+                    sentiment = _rule_based_sentiment(symbol, title, "")
 
-        results.append({
-            "news_id": news_id,
-            "d": pub_date,
-            "s": sentiment["sentiment"],
-            "r": sentiment["relevance"],
-            "t": title,
-            "rt1": None,
-            "title": title,
-            "content": "",
-            "source": "东方财富",
-            "published_at": pub_date,
-            "sentiment": sentiment["sentiment"],
-            "sentiment_cn": sentiment["sentiment_cn"],
-        })
+                    results.append({
+                        "news_id": news_id,
+                        "d": pub_date,
+                        "s": sentiment["sentiment"],
+                        "r": sentiment["relevance"],
+                        "t": title,
+                        "rt1": None,
+                        "title": title,
+                        "content": "",
+                        "source": "东方财富",
+                        "published_at": pub_date,
+                        "sentiment": sentiment["sentiment"],
+                        "sentiment_cn": sentiment["sentiment_cn"],
+                    })
+                    if len(results) >= limit:
+                        break
+            except Exception:
+                continue
+        if len(results) >= limit:
+            break
 
+    print(f"[NEWS] EM fallback: fetched {len(results)} news for {symbol}")
     return results
 
 
@@ -146,7 +148,7 @@ def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
 def get_particles(symbol: str, days: int = Query(90, ge=30, le=730)):
     """
     获取新闻粒子（用于 K 线图叠加）
-    DB有数据用DB，DB为空时实时从新浪获取
+    DB有数据用DB，DB为空时实时从东方财富获取
     """
     conn = _get_raw_conn()
     try:
@@ -178,14 +180,12 @@ def get_particles(symbol: str, days: int = Query(90, ge=30, le=730)):
             for r in rows
         ]
 
-        # Fallback: use Sina news when DB is empty
         if not results:
             results = _fetch_em_news_fallback(symbol, limit=50)
 
         return results
     except Exception as e:
         conn.close()
-        # Fallback on any error
         try:
             return _fetch_em_news_fallback(symbol, limit=50)
         except Exception:
@@ -195,7 +195,7 @@ def get_particles(symbol: str, days: int = Query(90, ge=30, le=730)):
 # ─── News List ────────────────────────────────────────────────────────────────
 @router.get("/{symbol}")
 def get_news(symbol: str, date: Optional[str] = Query(None)):
-    """获取新闻（DB → 新浪回退）"""
+    """获取新闻（DB → East Money 回退）"""
     conn = _get_raw_conn()
     try:
         if date:
@@ -233,7 +233,6 @@ def get_news(symbol: str, date: Optional[str] = Query(None)):
 
         results = [dict(r) for r in rows]
 
-        # Fallback: use East Money news when DB is empty
         if not results:
             results = _fetch_em_news_fallback(symbol, limit=30)
 
@@ -284,7 +283,6 @@ def get_categories(symbol: str, date: Optional[str] = Query(None)):
             ).fetchall()
         conn.close()
 
-        # Categorize
         CATEGORIES = [
             {"id": "policy", "label": "政策", "color": "#e91e63"},
             {"id": "earnings", "label": "业绩", "color": "#4caf50"},
@@ -293,9 +291,8 @@ def get_categories(symbol: str, date: Optional[str] = Query(None)):
             {"id": "market", "label": "市场", "color": "#9c27b0"},
             {"id": "other", "label": "其他", "color": "#607d8b"},
         ]
-
-        stats = {c["id"]: {"label": c["label"], "color": c["color"], "count": 0,
-                           "positive": 0, "negative": 0, "neutral": 0} for c in CATEGORIES}
+        stats = {c["id"]: {"label": c["label"], "color": c["color"],
+                           "count": 0, "positive": 0, "negative": 0, "neutral": 0} for c in CATEGORIES}
 
         def categorize(title: str, content: str) -> str:
             text = (title + " " + (content or ""))[:200]
@@ -324,17 +321,13 @@ def get_categories(symbol: str, date: Optional[str] = Query(None)):
                 stats[cat]["neutral"] += 1
 
         return list(stats.values())
-    except Exception as e:
+    except Exception:
         conn.close()
         return []
 
 
 @router.get("/{symbol}/range")
-def get_news_range(
-    symbol: str,
-    start: str = Query(...),
-    end: str = Query(...),
-):
+def get_news_range(symbol: str, start: str = Query(...), end: str = Query(...)):
     """获取指定日期范围的新闻"""
     conn = _get_raw_conn()
     try:
@@ -429,7 +422,6 @@ def _fetch_eastmoney_news(symbol: str, market: str, limit: int = 15) -> list[dic
 
 
 def _save_news(news_items: list[dict]) -> list[str]:
-    """Save news to DB, return saved IDs."""
     if not news_items:
         return []
     db = SessionLocal()
@@ -464,7 +456,6 @@ def _save_news(news_items: list[dict]) -> list[str]:
 
 
 def _analyze_and_align(symbol: str, saved_ids: list[str]) -> int:
-    """Analyze sentiment and align news to trading dates."""
     analyzed = 0
     db = SessionLocal()
     try:
@@ -496,8 +487,6 @@ def _analyze_and_align(symbol: str, saved_ids: list[str]) -> int:
             analyzed += 1
 
         db.commit()
-
-        # Align to trading dates
         _align_news_to_trading_dates(symbol, db)
 
     except Exception as e:
@@ -509,16 +498,10 @@ def _analyze_and_align(symbol: str, saved_ids: list[str]) -> int:
 
 
 def _align_news_to_trading_dates(symbol: str, db):
-    """Align news to nearest trading day."""
     try:
         raw_news = db.query(NewsRaw).filter(
             NewsRaw.id.in_(db.query(Layer1Result.news_id).filter(Layer1Result.symbol == symbol))
         ).all()
-
-        klines = db.query(NewsAligned.__table__, Stock.__table__).filter(
-            NewsAligned.symbol == symbol
-        ).all()
-        klines = db.query(NewsAligned).filter(NewsAligned.symbol == symbol).all()
 
         from database import DailyKline
         klines = db.query(DailyKline).filter(
@@ -577,10 +560,7 @@ def _align_news_to_trading_dates(symbol: str, db):
 
 @router.post("/{symbol}/fetch")
 def fetch_news(symbol: str):
-    """
-    抓取指定股票的财经新闻并保存到数据库
-    使用东方财富 + 新浪财经新闻源
-    """
+    """抓取指定股票的财经新闻并保存到数据库"""
     market = "sh" if symbol.startswith("6") or symbol.startswith("9") else "sz"
 
     all_news = []
