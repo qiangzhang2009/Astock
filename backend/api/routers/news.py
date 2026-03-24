@@ -118,20 +118,24 @@ def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
                     pub_date = datetime.now().strftime("%Y-%m-%d")
                 sentiment = _rule_based_sentiment(symbol, title, "")
 
-                results.append({
-                    "news_id": news_id,
-                    "d": pub_date,
-                    "s": sentiment["sentiment"],
-                    "r": sentiment["relevance"],
-                    "t": title,
-                    "rt1": None,
-                    "title": title,
-                    "content": "",
-                    "source": "东方财富",
-                    "published_at": pub_date,
-                    "sentiment": sentiment["sentiment"],
-                    "sentiment_cn": sentiment["sentiment_cn"],
-                })
+                    # Clean content field: strip HTML, truncate
+                    content_raw = item.get("content", "") or ""
+                    content_clean = re.sub(r"<[^>]*>", "", content_raw).strip()
+
+                    results.append({
+                        "news_id": news_id,
+                        "d": pub_date,
+                        "s": sentiment["sentiment"],
+                        "r": sentiment["relevance"],
+                        "t": title,
+                        "rt1": None,
+                        "title": title,
+                        "content": content_clean[:300] if content_clean else "",
+                        "source": "东方财富",
+                        "published_at": pub_date,
+                        "sentiment": sentiment["sentiment"],
+                        "sentiment_cn": sentiment["sentiment_cn"],
+                    })
                 if len(results) >= limit:
                     break
         except Exception:

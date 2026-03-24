@@ -128,6 +128,12 @@ export default function CandlestickChart({
     rsi: true, macd: true, boll: true,
   });
   const [brushExtent, setBrushExtent] = useState<[Date, Date] | null>(null);
+  const [tooltip, setTooltip] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    particle: NewsParticle | null;
+  }>({ visible: false, x: 0, y: 0, particle: null });
 
   const toggleIndicator = (key: IndicatorKey) => {
     setShowIndicators(prev => ({ ...prev, [key]: !prev[key] }));
@@ -202,8 +208,9 @@ export default function CandlestickChart({
       .range([0, innerW])
       .padding(0.2);
 
+    // Extend yMax to leave room for news particles above the chart
     const yMin = d3.min(displayData, (d) => d.low)! * 0.998;
-    const yMax = d3.max(displayData, (d) => d.high)! * 1.002;
+    const yMax = d3.max(displayData, (d) => d.high)! * 1.015;
     const yScale = d3.scaleLinear().domain([yMin, yMax]).range([priceInnerH, 0]);
 
     const maxVol = d3.max(displayData, (d) => d.volume) || 1;
@@ -407,11 +414,16 @@ export default function CandlestickChart({
               event.stopPropagation();
               onArticleSelect({ newsId: p.news_id, date: p.d });
             })
-            .on('mouseenter', function () {
-              d3.select(this).style('opacity', 1).attr('r', r + 2);
+            .on('mouseenter', (ev: MouseEvent) => {
+              d3.select(ev.currentTarget as Element).style('opacity', 1).attr('r', r + 2);
+              setTooltip({ visible: true, x: ev.clientX + 12, y: ev.clientY - 10, particle: p });
             })
-            .on('mouseleave', function () {
-              d3.select(this).style('opacity', 0.75).attr('r', r);
+            .on('mousemove', (ev: MouseEvent) => {
+              setTooltip(prev => ({ ...prev, x: ev.clientX + 12, y: ev.clientY - 10 }));
+            })
+            .on('mouseleave', (ev: MouseEvent) => {
+              d3.select(ev.currentTarget as Element).style('opacity', isLocked ? 1 : 0.75).attr('r', r);
+              setTooltip(prev => ({ ...prev, visible: false }));
             });
         });
       });
@@ -643,6 +655,20 @@ export default function CandlestickChart({
           </button>
         ))}
       </div>
+      {/* News Particle Tooltip */}
+      {tooltip.visible && tooltip.particle && (
+        <div
+          className="news-particle-tooltip"
+          style={{ left: tooltip.x, top: tooltip.y }}
+        >
+          <div className="particle-tooltip-date">{tooltip.particle.d}</div>
+          <div className={`particle-tooltip-sentiment ${tooltip.particle.s || 'neutral'}`}>
+            {tooltip.particle.s === 'positive' ? '利好' : tooltip.particle.s === 'negative' ? '利空' : '中性'}
+          </div>
+          <div className="particle-tooltip-title">{tooltip.particle.t}</div>
+          <div className="particle-tooltip-hint">点击查看详情</div>
+        </div>
+      )}
     </div>
   );
 }

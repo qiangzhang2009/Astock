@@ -1049,3 +1049,61 @@ input { font-family: inherit; }
 .summary-bar-labels { display: flex; justify-content: space-between; font-size: 10px; }
 .summary-bar-labels .up { color: var(--chart-red); }
 .summary-bar-labels .down { color: var(--chart-green); }
+
+/* ── News Particles ── */
+.news-particle-tooltip {
+  position: fixed;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 12px;
+  max-width: 280px;
+  pointer-events: none;
+  z-index: 1000;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.particle-tooltip-date {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-bottom: 4px;
+}
+.particle-tooltip-title {
+  color: var(--text-primary);
+  font-weight: 500;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+.particle-tooltip-sentiment {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.particle-tooltip-sentiment.positive {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--chart-green);
+}
+.particle-tooltip-sentiment.negative {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--chart-red);
+}
+.particle-tooltip-sentiment.neutral {
+  background: rgba(139, 148, 158, 0.15);
+  color: var(--text-secondary);
+}
+.particle-tooltip-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Particle SVG styles */
+.particle-circle {
+  transition: opacity 0.15s;
+}
