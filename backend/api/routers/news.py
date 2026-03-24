@@ -65,47 +65,75 @@ def _get_trade_date(pub_date_str: str) -> str:
 
 # ─── Sina News Fallback ────────────────────────────────────────────────────────
 def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
-    """East Money news API as fallback when DB is empty."""
+    """East Money search API as fallback when DB is empty."""
+    import urllib.parse
     market = "sh" if symbol.startswith("6") or symbol.startswith("9") else "sz"
-    em_code = f"{symbol}.{market}"
 
-    url = (
-        f"https://np-anotice-stock.eastmoney.com/api/security/ann"
-        f"?cb=&sr=-1&page_size={limit}&page_index=1&ann_type=SHA%,SZA%,BJA%&client_source=web&stock_list={em_code}"
-    )
+    # Build JSONP callback parameter
+    param_dict = {
+        "uid": "",
+        "keyword": symbol,
+        "type": ["cmsArticle"],
+        "client": "web",
+        "clientVersion": "curr",
+        "clientType": "web",
+        "param": {
+            "cmsArticle": {
+                "searchScope": "default",
+                "sort": "default",
+                "pageIndex": 1,
+                "pageSize": limit,
+                "preTag": '<span class=">',
+                "postTag": '</span>',
+            }
+        }
+    }
+    import json
+    param_str = json.dumps(param_dict, ensure_ascii=False)
+    encoded = urllib.parse.quote(param_str)
+    url = f"https://search-api-web.eastmoney.com/search/jsonp?cb=&param={encoded}"
+
     try:
         with httpx.Client(timeout=12, follow_redirects=True) as client:
             resp = client.get(url, headers=EM_HEADERS)
             resp.raise_for_status()
-            data = resp.json()
+            text = resp.text
     except Exception as e:
-        print(f"[NEWS] EM fallback fetch error: {e}")
+        print(f"[NEWS] EM fallback error: {e}")
         return []
 
-    items = data.get("data", {}).get("list", []) or []
+    try:
+        # Parse JSONP response: ({"code":0, ...})
+        json_str = text[1:] if text.startswith("(") else text
+        data = json.loads(json_str)
+        items = data.get("result", {}).get("cmsArticle", []) or []
+    except Exception as e:
+        print(f"[NEWS] EM parse error: {e}")
+        return []
+
     results = []
     for item in items:
-        title = item.get("title", "")
+        title = re.sub(r'<[^>]+>', '', item.get("title", "")).strip()
         if not title:
             continue
-        news_id = hashlib.md5((title + item.get("notice_date", "")).encode()).hexdigest()[:24]
-        notice_date = item.get("notice_date", "")[:10]  # YYYY-MM-DD
-        if not notice_date:
-            notice_date = datetime.now().strftime("%Y-%m-%d")
+        news_id = hashlib.md5((title + item.get("date", "")).encode()).hexdigest()[:24]
+        pub_date = item.get("date", "")[:10]
+        if not pub_date:
+            pub_date = datetime.now().strftime("%Y-%m-%d")
 
-        sentiment = _rule_based_sentiment(symbol, title, item.get("summary", ""))
+        sentiment = _rule_based_sentiment(symbol, title, "")
 
         results.append({
             "news_id": news_id,
-            "d": notice_date,
+            "d": pub_date,
             "s": sentiment["sentiment"],
             "r": sentiment["relevance"],
             "t": title,
             "rt1": None,
             "title": title,
-            "content": item.get("summary", ""),
+            "content": "",
             "source": "东方财富",
-            "published_at": notice_date,
+            "published_at": pub_date,
             "sentiment": sentiment["sentiment"],
             "sentiment_cn": sentiment["sentiment_cn"],
         })
