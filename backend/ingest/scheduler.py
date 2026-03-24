@@ -16,18 +16,17 @@ if _project_root not in sys.path:
 from ingest.sync import DEFAULT_STOCKS, sync_ohlc_to_pg, seed_stocks
 from ingest.news_scraper import bg_fetch_news
 
-# Sync intervals (seconds)
-OHLC_SYNC_INTERVAL = 3600      # 1 hour for OHLC
-NEWS_SYNC_INTERVAL = 1800       # 30 min for news
-FULL_REFRESH_INTERVAL = 21600  # 6 hours for full resync
+# Sync intervals
+OHLC_SYNC_INTERVAL = 1800     # 30 min
+NEWS_SYNC_INTERVAL = 600     # 10 min
 
 # Batch sizes
-OHLC_BATCH_SIZE = 30            # Stocks per OHLC batch
-NEWS_BATCH_SIZE = 20            # Stocks per news batch
+OHLC_BATCH_SIZE = 50        # 50 stocks per OHLC batch
+NEWS_BATCH_SIZE = 30        # 30 stocks per news batch
 
 
 class SyncScheduler:
-    """Background scheduler for periodic data synchronization."""
+    """Background scheduler for continuous data synchronization."""
 
     def __init__(self):
         self._running = False
@@ -36,61 +35,51 @@ class SyncScheduler:
         self._ohlc_index = 0
         self._news_index = 0
 
-    def _get_ohlc_batch(self):
-        """Get next batch of stocks for OHLC sync."""
+    def _get_batch(self, batch_size: int, index_ref: list[int]) -> list:
+        idx = index_ref[0]
         batch = []
-        for _ in range(OHLC_BATCH_SIZE):
-            stock = self._stocks_to_sync[self._ohlc_index % len(self._stocks_to_sync)]
+        for _ in range(batch_size):
+            stock = self._stocks_to_sync[idx % len(self._stocks_to_sync)]
             batch.append(stock)
-            self._ohlc_index += 1
-        return batch
-
-    def _get_news_batch(self):
-        """Get next batch of stocks for news sync."""
-        batch = []
-        for _ in range(NEWS_BATCH_SIZE):
-            stock = self._stocks_to_sync[self._news_index % len(self._stocks_to_sync)]
-            batch.append(stock)
-            self._news_index += 1
+            idx += 1
+        index_ref[0] = idx
         return batch
 
     def _run_loop(self):
-        """Main scheduler loop."""
-        print(f"[SCHEDULER] Started — {len(self._stocks_to_sync)} stocks in pool")
-        last_full = time.time()
+        """Main scheduler loop — OHLC + news sync in parallel batches."""
+        print(f"[SCHEDULER] Started — {len(self._stocks_to_sync)} stocks")
 
         while self._running:
             now = time.time()
             tick = datetime.now().strftime("%H:%M:%S")
 
-            # Full resync every 6 hours
-            if now - last_full >= FULL_REFRESH_INTERVAL:
-                print(f"[SCHEDULER] Full resync at {tick}")
-                last_full = now
-
-            # OHLC sync batch
-            ohlc_batch = self._get_ohlc_batch()
+            # OHLC batch (50 stocks, ~0.2s each = 10s per batch)
+            ohlc_batch = self._get_batch(OHLC_BATCH_SIZE, [self._ohlc_index])
             print(f"[SCHEDULER] [{tick}] OHLC batch ({len(ohlc_batch)} stocks)...")
             for sym, name, sector, market in ohlc_batch:
+                if not self._running:
+                    break
                 try:
                     sync_ohlc_to_pg(sym, market)
                 except Exception as e:
                     print(f"[SCHEDULER] OHLC {sym}: {e}")
-                time.sleep(0.3)  # Rate limit
+                time.sleep(0.15)
 
-            # News sync batch
-            news_batch = self._get_news_batch()
+            # News batch (30 stocks, ~3s each = 90s per batch)
+            news_batch = self._get_batch(NEWS_BATCH_SIZE, [self._news_index])
             print(f"[SCHEDULER] [{tick}] News batch ({len(news_batch)} stocks)...")
             for sym, name, sector, market in news_batch:
+                if not self._running:
+                    break
                 try:
                     bg_fetch_news(sym, market)
                 except Exception as e:
                     print(f"[SCHEDULER] News {sym}: {e}")
-                time.sleep(1)  # Respect rate limits
+                time.sleep(0.3)
 
-            # Sleep before next cycle
+            # Sleep
             elapsed = time.time() - now
-            sleep_time = max(NEWS_SYNC_INTERVAL - elapsed, 60)
+            sleep_time = max(OHLC_SYNC_INTERVAL - elapsed, 60)
             print(f"[SCHEDULER] Sleeping {int(sleep_time)}s...")
             for _ in range(int(sleep_time)):
                 if not self._running:
@@ -98,40 +87,38 @@ class SyncScheduler:
                 time.sleep(1)
 
     def start(self):
-        """Start the scheduler in a background thread."""
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="SyncScheduler")
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            daemon=True,
+            name="SyncScheduler"
+        )
         self._thread.start()
-        print("[SCHEDULER] Background scheduler thread started")
+        print("[SCHEDULER] Background scheduler started")
 
     def stop(self):
-        """Stop the scheduler."""
         self._running = False
         if self._thread:
             self._thread.join(timeout=5)
         print("[SCHEDULER] Stopped")
 
 
-# Global scheduler instance
 _scheduler = SyncScheduler()
 
 
 def start_scheduler():
-    """Start the global scheduler (call from FastAPI startup)."""
     _scheduler.start()
 
 
 def stop_scheduler():
-    """Stop the global scheduler (call from FastAPI shutdown)."""
     _scheduler.stop()
 
 
 def sync_stock_now(symbol: str, market: str = "sh"):
     """Trigger immediate OHLC + news sync for a single stock."""
-    threading.Thread(
-        target=lambda s, m: (sync_ohlc_to_pg(s, m), bg_fetch_news(s, m)),
-        args=(symbol, market),
-        daemon=True
-    ).start()
+    def _do():
+        sync_ohlc_to_pg(symbol, market)
+        bg_fetch_news(symbol, market)
+    threading.Thread(target=_do, daemon=True).start()

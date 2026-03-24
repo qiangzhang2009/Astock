@@ -1,83 +1,121 @@
 """
-GET /api/news/{symbol}/particles   — 新闻粒子（用于图表叠加）
-GET /api/news/{symbol}             — 单日新闻
-GET /api/news/{symbol}/categories  — 新闻分类
-GET /api/news/{symbol}/range       — 区间新闻
-POST /api/news/{symbol}/fetch      — 抓取新闻
+GET /api/news/{symbol}             — 新闻列表（DB → 新浪回退）
+GET /api/news/{symbol}/particles  — K线图新闻粒子（DB → 新浪回退）
+GET /api/news/{symbol}/categories — 新闻分类统计
+GET /api/news/{symbol}/range      — 区间新闻
+POST /api/news/{symbol}/fetch     — 抓取新闻
 GET /api/news/{symbol}/stats       — 新闻统计
 """
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
-from typing import Optional
+import httpx
+import re
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Optional
 
-from database import SessionLocal, NewsRaw, Layer1Result, NewsAligned
-from ingest.news_scraper import fetch_and_analyze_stock_news
+from database import get_conn, SessionLocal, NewsRaw, Layer1Result, NewsAligned, Stock
+from pipeline.layer1 import analyze_news_sentiment, _rule_based_sentiment
 
 router = APIRouter()
 
+EM_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Referer": "https://www.eastmoney.com/",
+    "Accept": "application/json, text/plain, */*",
+}
 
-class NewsItem(BaseModel):
-    news_id: str
-    title: str
-    content: Optional[str] = None
-    source: Optional[str] = None
-    published_at: Optional[str] = None
-    sentiment: Optional[str] = None
-    sentiment_cn: Optional[str] = None
-    relevance: Optional[str] = None
-    key_discussion: Optional[str] = None
-    reason_growth: Optional[str] = None
-    reason_decrease: Optional[str] = None
-    trade_date: Optional[str] = None
-    ret_t0: Optional[float] = None
-    ret_t1: Optional[float] = None
-    ret_t3: Optional[float] = None
-    ret_t5: Optional[float] = None
+SINA_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Referer": "https://finance.sina.com.cn/",
+    "Accept-Charset": "GBK,utf-8;q=0.7,*;q=0.3",
+}
 
 
-class NewsParticle(BaseModel):
-    news_id: str
-    d: str
-    s: Optional[str] = None
-    r: Optional[str] = None
-    t: str
-    rt1: Optional[float] = None
+def _days_ago(n: int) -> str:
+    return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%d")
 
 
-# A股新闻分类
-A_STOCK_CATEGORIES = [
-    {"key": "policy", "label": "政策", "color": "#58a6ff"},
-    {"key": "earnings", "label": "业绩", "color": "#3fb950"},
-    {"key": "concept", "label": "概念", "color": "#bc8cff"},
-    {"key": "announcement", "label": "公告", "color": "#f0883e"},
-    {"key": "market", "label": "市场", "color": "#d29922"},
-    {"key": "other", "label": "其他", "color": "#8b949e"},
-]
+def _get_raw_conn():
+    return get_conn()
 
 
-def _auto_categorize(title: str, content: str = "") -> dict:
-    """Auto-categorize news based on keywords."""
-    text = (title + " " + content).lower()
-    if any(k in text for k in ["政策", "监管", "央行", "财政部", "证监会", "国务院", "部委", "规划"]):
-        return A_STOCK_CATEGORIES[0]  # policy
-    if any(k in text for k in ["业绩", "净利润", "营收", "利润", "季报", "年报", "预增", "预减", "超预期"]):
-        return A_STOCK_CATEGORIES[1]  # earnings
-    if any(k in text for k in ["概念", "题材", "热点", "风口", "AI", "新能源", "芯片", "半导体"]):
-        return A_STOCK_CATEGORIES[2]  # concept
-    if any(k in text for k in ["公告", "公告称", "披露", "决议", "决议公告"]):
-        return A_STOCK_CATEGORIES[3]  # announcement
-    if any(k in text for k in ["大盘", "市场", "指数", "涨", "跌", "资金", "北向"]):
-        return A_STOCK_CATEGORIES[4]  # market
-    return A_STOCK_CATEGORIES[5]  # other
+def _parse_date(date_str: str) -> str:
+    """Parse date string to YYYY-MM-DD."""
+    if not date_str:
+        return datetime.now().strftime("%Y-%m-%d")
+    date_str = date_str.strip()
+    if re.match(r"\d{4}-\d{2}-\d{2}", date_str):
+        return date_str[:10]
+    if re.match(r"^\d{10}$", date_str):
+        return datetime.fromtimestamp(int(date_str)).strftime("%Y-%m-%d")
+    if re.match(r"^\d{13}$", date_str):
+        return datetime.fromtimestamp(int(date_str) / 1000).strftime("%Y-%m-%d")
+    for fmt in ["%Y/%m/%d %H:%M:%S", "%Y/%m/%d", "%m/%d %H:%M"]:
+        try:
+            return datetime.strptime(date_str[:19], fmt).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return datetime.now().strftime("%Y-%m-%d")
 
 
-@router.get("/{symbol}/particles", response_model=list[NewsParticle])
+def _get_trade_date(pub_date_str: str) -> str:
+    """Find the nearest trading day >= pub_date."""
+    return _parse_date(pub_date_str)
+
+
+# ─── Sina News Fallback ────────────────────────────────────────────────────────
+def _fetch_sina_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
+    """Direct Sina news API as fallback when DB is empty."""
+    market = "sh" if symbol.startswith("6") or symbol.startswith("9") else "sz"
+    em_code = f"{symbol}.{market}"
+
+    url = (
+        "https://np-listapi.eastmoney.com/comm/web/getNnewsList"
+        f"?client=web&product=webNnews&keyword={symbol}&page=1&pageSize={limit}"
+        f"&order=0&dev=1&platform=web&sv=&pageIndex=1&pageSize={limit}"
+        f"&keyword2={em_code}&fields=title,ctime,summary,source,author,nick"
+    )
+    try:
+        with httpx.Client(timeout=10, follow_redirects=True) as client:
+            resp = client.get(url, headers=EM_HEADERS)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        return []
+
+    items = data.get("data", {}).get("list", []) or []
+    results = []
+    for item in items:
+        title = item.get("title", "")
+        if not title:
+            continue
+        news_id = hashlib.md5((title + item.get("ctime", "")).encode()).hexdigest()[:24]
+        pub_time = item.get("ctime", "")
+        # Rule-based sentiment
+        sentiment = _rule_based_sentiment(symbol, title, item.get("summary", ""))
+        results.append({
+            "news_id": news_id,
+            "d": _get_trade_date(pub_time),
+            "s": sentiment["sentiment"],
+            "r": sentiment["relevance"],
+            "t": title,
+            "rt1": None,
+            "title": title,
+            "content": item.get("summary", ""),
+            "source": item.get("source", "新浪财经"),
+            "published_at": pub_time,
+            "sentiment": sentiment["sentiment"],
+            "sentiment_cn": sentiment["sentiment_cn"],
+        })
+    return results
+
+
+# ─── Particles (K线图新闻点) ────────────────────────────────────────────────
+@router.get("/{symbol}/particles")
 def get_particles(symbol: str, days: int = Query(90, ge=30, le=730)):
     """
     获取新闻粒子（用于 K 线图叠加）
-    返回: { news_id, d, s, r, t, rt1 } 格式
+    DB有数据用DB，DB为空时实时从新浪获取
     """
     conn = _get_raw_conn()
     try:
@@ -95,8 +133,9 @@ def get_particles(symbol: str, days: int = Query(90, ge=30, le=730)):
             """,
             (symbol, cutoff)
         ).fetchall()
+        conn.close()
 
-        return [
+        results = [
             {
                 "news_id": r["news_id"],
                 "d": r["d"],
@@ -107,13 +146,25 @@ def get_particles(symbol: str, days: int = Query(90, ge=30, le=730)):
             }
             for r in rows
         ]
-    finally:
+
+        # Fallback: use Sina news when DB is empty
+        if not results:
+            results = _fetch_sina_news_fallback(symbol, limit=50)
+
+        return results
+    except Exception as e:
         conn.close()
+        # Fallback on any error
+        try:
+            return _fetch_sina_news_fallback(symbol, limit=50)
+        except Exception:
+            return []
 
 
-@router.get("/{symbol}", response_model=list[NewsItem])
+# ─── News List ────────────────────────────────────────────────────────────────
+@router.get("/{symbol}")
 def get_news(symbol: str, date: Optional[str] = Query(None)):
-    """获取指定日期的新闻"""
+    """获取新闻（DB → 新浪回退）"""
     conn = _get_raw_conn()
     try:
         if date:
@@ -147,18 +198,26 @@ def get_news(symbol: str, date: Optional[str] = Query(None)):
                 """,
                 (symbol,)
             ).fetchall()
-
-        return [dict(r) for r in rows]
-    finally:
         conn.close()
+
+        results = [dict(r) for r in rows]
+
+        # Fallback: use Sina news when DB is empty
+        if not results:
+            results = _fetch_sina_news_fallback(symbol, limit=30)
+
+        return results
+    except Exception as e:
+        conn.close()
+        try:
+            return _fetch_sina_news_fallback(symbol, limit=30)
+        except Exception:
+            return []
 
 
 @router.get("/{symbol}/categories")
 def get_categories(symbol: str, date: Optional[str] = Query(None)):
-    """
-    获取新闻分类统计
-    A 股分类: 政策、业绩、概念、公告、市场、其他
-    """
+    """获取新闻分类统计"""
     conn = _get_raw_conn()
     try:
         if date:
@@ -172,11 +231,11 @@ def get_categories(symbol: str, date: Optional[str] = Query(None)):
                 JOIN layer1_results l1 ON na.news_id = l1.news_id AND na.symbol = l1.symbol
                 JOIN news_raw nr ON na.news_id = nr.id
                 WHERE na.symbol = ? AND na.trade_date = ?
+                ORDER BY nr.published_at DESC
                 """,
                 (symbol, date)
             ).fetchall()
         else:
-            cutoff = _days_ago(30)
             rows = conn.execute(
                 """
                 SELECT na.news_id, nr.title, nr.content, nr.source, nr.published_at,
@@ -186,44 +245,66 @@ def get_categories(symbol: str, date: Optional[str] = Query(None)):
                 FROM news_aligned na
                 JOIN layer1_results l1 ON na.news_id = l1.news_id AND na.symbol = l1.symbol
                 JOIN news_raw nr ON na.news_id = nr.id
-                WHERE na.symbol = ? AND na.trade_date >= ?
+                WHERE na.symbol = ?
+                ORDER BY na.trade_date DESC, nr.published_at DESC
+                LIMIT 100
                 """,
-                (symbol, cutoff)
+                (symbol,)
             ).fetchall()
-
-        # Categorize and count
-        categories = {c["key"]: {"label": c["label"], "color": c["color"],
-                                  "count": 0, "positive": 0, "negative": 0, "neutral": 0, "news_ids": []}
-                      for c in A_STOCK_CATEGORIES}
-
-        for r in rows:
-            d = dict(r)
-            cat = _auto_categorize(d.get("title") or "", d.get("content") or "")
-            ck = cat["key"]
-            categories[ck]["count"] += 1
-            categories[ck]["news_ids"].append(d["news_id"])
-            sent = d.get("sentiment", "neutral")
-            if sent == "positive":
-                categories[ck]["positive"] += 1
-            elif sent == "negative":
-                categories[ck]["negative"] += 1
-            else:
-                categories[ck]["neutral"] += 1
-
-        return [
-            {"key": k, **v}
-            for k, v in categories.items()
-            if v["count"] > 0
-        ]
-    finally:
         conn.close()
+
+        # Categorize
+        CATEGORIES = [
+            {"id": "policy", "label": "政策", "color": "#e91e63"},
+            {"id": "earnings", "label": "业绩", "color": "#4caf50"},
+            {"id": "concept", "label": "概念", "color": "#2196f3"},
+            {"id": "announcement", "label": "公告", "color": "#ff9800"},
+            {"id": "market", "label": "市场", "color": "#9c27b0"},
+            {"id": "other", "label": "其他", "color": "#607d8b"},
+        ]
+
+        stats = {c["id"]: {"label": c["label"], "color": c["color"], "count": 0,
+                           "positive": 0, "negative": 0, "neutral": 0} for c in CATEGORIES}
+
+        def categorize(title: str, content: str) -> str:
+            text = (title + " " + (content or ""))[:200]
+            if any(k in text for k in ["政策", "国务院", "证监会", "央行", "工信部", "发改委", "财政部"]):
+                return "policy"
+            if any(k in text for k in ["业绩", "净利润", "营收", "年报", "季报", "超预期", "预增", "预减"]):
+                return "earnings"
+            if any(k in text for k in ["AI", "芯片", "新能源", "半导体", "机器人", "概念", "题材"]):
+                return "concept"
+            if any(k in text for k in ["公告", "决议", "临时停牌", "分红", "配股"]):
+                return "announcement"
+            if any(k in text for k in ["大盘", "市场", "指数", "北向", "资金"]):
+                return "market"
+            return "other"
+
+        for row in rows:
+            r = dict(row)
+            cat = categorize(r.get("title", ""), r.get("content", ""))
+            sentiment = r.get("sentiment", "neutral")
+            stats[cat]["count"] += 1
+            if sentiment == "positive":
+                stats[cat]["positive"] += 1
+            elif sentiment == "negative":
+                stats[cat]["negative"] += 1
+            else:
+                stats[cat]["neutral"] += 1
+
+        return list(stats.values())
+    except Exception as e:
+        conn.close()
+        return []
 
 
 @router.get("/{symbol}/range")
-def get_news_range(symbol: str,
-                   start: str = Query(...),
-                   end: str = Query(...)):
-    """获取区间内的所有新闻"""
+def get_news_range(
+    symbol: str,
+    start: str = Query(...),
+    end: str = Query(...),
+):
+    """获取指定日期范围的新闻"""
     conn = _get_raw_conn()
     try:
         rows = conn.execute(
@@ -241,10 +322,226 @@ def get_news_range(symbol: str,
             """,
             (symbol, start, end)
         ).fetchall()
-
+        conn.close()
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+@router.get("/{symbol}/stats")
+def get_news_stats(symbol: str):
+    """获取新闻统计摘要"""
+    conn = _get_raw_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT l1.sentiment, COUNT(*) as cnt
+            FROM news_aligned na
+            JOIN layer1_results l1 ON na.news_id = l1.news_id AND na.symbol = l1.symbol
+            WHERE na.symbol = ?
+            GROUP BY l1.sentiment
+            """,
+            (symbol,)
+        ).fetchall()
+        conn.close()
+        stats = {"positive": 0, "negative": 0, "neutral": 0, "total": 0}
+        for r in rows:
+            s = r["sentiment"] or "neutral"
+            if s in stats:
+                stats[s] = r["cnt"]
+                stats["total"] += r["cnt"]
+        return stats
+    except Exception:
+        conn.close()
+        return {"positive": 0, "negative": 0, "neutral": 0, "total": 0}
+
+
+# ─── Fetch News ──────────────────────────────────────────────────────────────
+def _to_em_code(symbol: str, market: str) -> str:
+    m = {"sh": "sh", "sz": "sz", "bj": "bj"}.get(market, "sh")
+    return f"{symbol}.{m}"
+
+
+def _fetch_eastmoney_news(symbol: str, market: str, limit: int = 15) -> list[dict]:
+    em_code = _to_em_code(symbol, market)
+    url = (
+        f"https://np-anotice-stock.eastmoney.com/api/security/ann"
+        f"?cb=&sr=-1&page_size={limit}&page_index=1&ann_type=SHA%"
+        f",SZA%,BJA%&client_source=web&stock_list={em_code}"
+    )
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True) as client:
+            resp = client.get(url, headers=EM_HEADERS)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        return []
+
+    items = data.get("data", {}).get("list", []) or []
+    results = []
+    for item in items:
+        title = item.get("title", "")
+        if not title:
+            continue
+        news_id = hashlib.md5((title + item.get("notice_date", "")).encode()).hexdigest()[:24]
+        pub_time = item.get("notice_date", "")[:19]
+        results.append({
+            "id": news_id,
+            "title": title.strip(),
+            "content": item.get("summary", "")[:500],
+            "source": item.get("security_type_name", "东方财富"),
+            "url": item.get("art_url", ""),
+            "published_at": pub_time,
+            "symbols": [],
+        })
+    return results
+
+
+def _save_news(news_items: list[dict]) -> list[str]:
+    """Save news to DB, return saved IDs."""
+    if not news_items:
+        return []
+    db = SessionLocal()
+    saved_ids = []
+    try:
+        for item in news_items:
+            news_id = item.get("id", "")
+            if not news_id:
+                news_id = hashlib.md5((item["title"] + item.get("published_at", "")).encode()).hexdigest()[:24]
+            existing = db.query(NewsRaw).filter(NewsRaw.id == news_id).first()
+            if existing:
+                saved_ids.append(news_id)
+                continue
+            news = NewsRaw(
+                id=news_id,
+                title=item["title"],
+                content=item.get("content", ""),
+                source=item.get("source", ""),
+                url=item.get("url", ""),
+                published_at=item.get("published_at", ""),
+            )
+            db.add(news)
+            saved_ids.append(news_id)
+        db.commit()
+        print(f"[NEWS] Saved {len(saved_ids)} items")
+    except Exception as e:
+        print(f"[NEWS] Save error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+    return saved_ids
+
+
+def _analyze_and_align(symbol: str, saved_ids: list[str]) -> int:
+    """Analyze sentiment and align news to trading dates."""
+    analyzed = 0
+    db = SessionLocal()
+    try:
+        for news_id in saved_ids:
+            existing = db.query(Layer1Result).filter(
+                Layer1Result.news_id == news_id,
+                Layer1Result.symbol == symbol
+            ).first()
+            if existing:
+                continue
+            news = db.query(NewsRaw).filter(NewsRaw.id == news_id).first()
+            if not news:
+                continue
+
+            sentiment = analyze_news_sentiment(
+                symbol=symbol, news_id=news_id,
+                title=news.title, content=news.content,
+            )
+            lr = Layer1Result(
+                news_id=news_id, symbol=symbol,
+                sentiment=sentiment.get("sentiment", "neutral"),
+                sentiment_cn=sentiment.get("sentiment_cn", "中性"),
+                relevance=sentiment.get("relevance", "medium"),
+                key_discussion=sentiment.get("key_discussion", ""),
+                reason_growth=sentiment.get("reason_growth", ""),
+                reason_decrease=sentiment.get("reason_decrease", ""),
+            )
+            db.add(lr)
+            analyzed += 1
+
+        db.commit()
+
+        # Align to trading dates
+        _align_news_to_trading_dates(symbol, db)
+
+    except Exception as e:
+        print(f"[NEWS] Analysis error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+    return analyzed
+
+
+def _align_news_to_trading_dates(symbol: str, db):
+    """Align news to nearest trading day."""
+    try:
+        raw_news = db.query(NewsRaw).filter(
+            NewsRaw.id.in_(db.query(Layer1Result.news_id).filter(Layer1Result.symbol == symbol))
+        ).all()
+
+        klines = db.query(NewsAligned.__table__, Stock.__table__).filter(
+            NewsAligned.symbol == symbol
+        ).all()
+        klines = db.query(NewsAligned).filter(NewsAligned.symbol == symbol).all()
+
+        from database import DailyKline
+        klines = db.query(DailyKline).filter(
+            DailyKline.code == symbol
+        ).order_by(DailyKline.date).all()
+
+        if not klines:
+            return
+
+        date_map = {str(k.date)[:10]: k for k in klines}
+        sorted_dates = sorted(date_map.keys())
+
+        for news in raw_news:
+            existing = db.query(NewsAligned).filter(
+                NewsAligned.symbol == symbol,
+                NewsAligned.news_id == news.id
+            ).first()
+            if existing:
+                continue
+
+            pub_date = _parse_date(news.published_at or "")
+            trade_date = None
+            for d in sorted_dates:
+                if d >= pub_date:
+                    trade_date = d
+                    break
+            if not trade_date:
+                trade_date = sorted_dates[-1] if sorted_dates else pub_date
+
+            k0 = date_map.get(trade_date)
+            ret_t0 = k0.change_pct if k0 else 0.0
+
+            try:
+                idx = sorted_dates.index(trade_date)
+                ret_t1 = 0.0
+                if idx + 1 < len(sorted_dates):
+                    k1 = date_map.get(sorted_dates[idx + 1])
+                    if k0 and k1:
+                        ret_t1 = round((k1.close - k0.close) / k0.close * 100, 4)
+            except ValueError:
+                ret_t1 = 0.0
+
+            aligned = NewsAligned(
+                news_id=news.id, symbol=symbol, trade_date=trade_date,
+                ret_t0=ret_t0 or 0.0, ret_t1=ret_t1 or 0.0,
+                ret_t3=0.0, ret_t5=0.0,
+            )
+            db.add(aligned)
+
+        db.commit()
+        print(f"[NEWS] Aligned news for {symbol}")
+    except Exception as e:
+        print(f"[NEWS] Alignment error: {e}")
+        db.rollback()
 
 
 @router.post("/{symbol}/fetch")
@@ -253,71 +550,25 @@ def fetch_news(symbol: str):
     抓取指定股票的财经新闻并保存到数据库
     使用东方财富 + 新浪财经新闻源
     """
-    # Determine market from symbol
     market = "sh" if symbol.startswith("6") or symbol.startswith("9") else "sz"
 
-    try:
-        results = fetch_and_analyze_stock_news(symbol, market)
-        return {
-            "symbol": symbol,
-            "fetched": results["fetched"],
-            "saved": results["saved"],
-            "analyzed": results["analyzed"],
-            "status": "ok",
-            "message": f"获取 {results['fetched']} 条新闻，分析 {results['analyzed']} 条"
-        }
-    except Exception as e:
-        return {
-            "symbol": symbol,
-            "fetched": 0,
-            "saved": 0,
-            "analyzed": 0,
-            "status": "error",
-            "message": str(e)
-        }
+    all_news = []
+    all_news.extend(_fetch_eastmoney_news(symbol, market, limit=15))
 
+    seen = set()
+    unique_news = [n for n in all_news if not (n["title"] in seen or seen.add(n["title"]))]
 
-@router.get("/{symbol}/stats")
-def get_news_stats(symbol: str, days: int = Query(30, ge=1, le=365)):
-    """获取新闻统计信息"""
-    conn = _get_raw_conn()
-    try:
-        cutoff = _days_ago(days)
-        rows = conn.execute(
-            """
-            SELECT l1.sentiment, COUNT(*) as cnt
-            FROM news_aligned na
-            JOIN layer1_results l1 ON na.news_id = l1.news_id AND na.symbol = l1.symbol
-            WHERE na.symbol = ? AND na.trade_date >= ?
-            GROUP BY l1.sentiment
-            """,
-            (symbol, cutoff)
-        ).fetchall()
+    results = {"fetched": len(unique_news), "saved": 0, "analyzed": 0}
 
-        total = sum(r["cnt"] for r in rows)
-        sentiment_counts = {r["sentiment"]: r["cnt"] for r in rows}
+    saved_ids = _save_news(unique_news)
+    results["saved"] = len(saved_ids)
 
-        return {
-            "symbol": symbol,
-            "total": total,
-            "positive": sentiment_counts.get("positive", 0),
-            "negative": sentiment_counts.get("negative", 0),
-            "neutral": sentiment_counts.get("neutral", 0),
-            "days": days,
-            "period_start": cutoff,
-        }
-    finally:
-        conn.close()
+    if saved_ids:
+        results["analyzed"] = _analyze_and_align(symbol, saved_ids)
 
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-def _get_raw_conn():
-    """Get raw sqlite3 connection for complex queries."""
-    from database import get_conn
-    return get_conn()
-
-
-def _days_ago(n: int) -> str:
-    """Return date N days ago as YYYY-MM-DD string."""
-    from datetime import datetime, timedelta
-    return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%d")
+    return {
+        "symbol": symbol,
+        **results,
+        "status": "ok",
+        "message": f"获取 {results['fetched']} 条新闻，分析 {results['analyzed']} 条",
+    }
