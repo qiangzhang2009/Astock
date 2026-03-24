@@ -64,23 +64,22 @@ def _get_trade_date(pub_date_str: str) -> str:
 
 
 # ─── Sina News Fallback ────────────────────────────────────────────────────────
-def _fetch_sina_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
-    """Direct Sina news API as fallback when DB is empty."""
+def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
+    """East Money news API as fallback when DB is empty."""
     market = "sh" if symbol.startswith("6") or symbol.startswith("9") else "sz"
     em_code = f"{symbol}.{market}"
 
     url = (
-        "https://np-listapi.eastmoney.com/comm/web/getNnewsList"
-        f"?client=web&product=webNnews&keyword={symbol}&page=1&pageSize={limit}"
-        f"&order=0&dev=1&platform=web&sv=&pageIndex=1&pageSize={limit}"
-        f"&keyword2={em_code}&fields=title,ctime,summary,source,author,nick"
+        f"https://np-anotice-stock.eastmoney.com/api/security/ann"
+        f"?cb=&sr=-1&page_size={limit}&page_index=1&ann_type=SHA%,SZA%,BJA%&client_source=web&stock_list={em_code}"
     )
     try:
-        with httpx.Client(timeout=10, follow_redirects=True) as client:
+        with httpx.Client(timeout=12, follow_redirects=True) as client:
             resp = client.get(url, headers=EM_HEADERS)
             resp.raise_for_status()
             data = resp.json()
-    except Exception:
+    except Exception as e:
+        print(f"[NEWS] EM fallback fetch error: {e}")
         return []
 
     items = data.get("data", {}).get("list", []) or []
@@ -89,24 +88,28 @@ def _fetch_sina_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
         title = item.get("title", "")
         if not title:
             continue
-        news_id = hashlib.md5((title + item.get("ctime", "")).encode()).hexdigest()[:24]
-        pub_time = item.get("ctime", "")
-        # Rule-based sentiment
+        news_id = hashlib.md5((title + item.get("notice_date", "")).encode()).hexdigest()[:24]
+        notice_date = item.get("notice_date", "")[:10]  # YYYY-MM-DD
+        if not notice_date:
+            notice_date = datetime.now().strftime("%Y-%m-%d")
+
         sentiment = _rule_based_sentiment(symbol, title, item.get("summary", ""))
+
         results.append({
             "news_id": news_id,
-            "d": _get_trade_date(pub_time),
+            "d": notice_date,
             "s": sentiment["sentiment"],
             "r": sentiment["relevance"],
             "t": title,
             "rt1": None,
             "title": title,
             "content": item.get("summary", ""),
-            "source": item.get("source", "新浪财经"),
-            "published_at": pub_time,
+            "source": "东方财富",
+            "published_at": notice_date,
             "sentiment": sentiment["sentiment"],
             "sentiment_cn": sentiment["sentiment_cn"],
         })
+
     return results
 
 
@@ -149,14 +152,14 @@ def get_particles(symbol: str, days: int = Query(90, ge=30, le=730)):
 
         # Fallback: use Sina news when DB is empty
         if not results:
-            results = _fetch_sina_news_fallback(symbol, limit=50)
+            results = _fetch_em_news_fallback(symbol, limit=50)
 
         return results
     except Exception as e:
         conn.close()
         # Fallback on any error
         try:
-            return _fetch_sina_news_fallback(symbol, limit=50)
+            return _fetch_em_news_fallback(symbol, limit=50)
         except Exception:
             return []
 
@@ -202,15 +205,15 @@ def get_news(symbol: str, date: Optional[str] = Query(None)):
 
         results = [dict(r) for r in rows]
 
-        # Fallback: use Sina news when DB is empty
+        # Fallback: use East Money news when DB is empty
         if not results:
-            results = _fetch_sina_news_fallback(symbol, limit=30)
+            results = _fetch_em_news_fallback(symbol, limit=30)
 
         return results
     except Exception as e:
         conn.close()
         try:
-            return _fetch_sina_news_fallback(symbol, limit=30)
+            return _fetch_em_news_fallback(symbol, limit=30)
         except Exception:
             return []
 
