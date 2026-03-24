@@ -16,39 +16,35 @@ export default function NewsCategoryPanel({ symbol, activeCategory, onCategoryCh
     if (!symbol) return;
     setLoading(true);
     axios.get(`/api/news/${symbol}/categories`)
-      .then((r) => setCategories(r.data))
+      .then(res => {
+        const cats: NewsCategory[] = Array.isArray(res.data) ? res.data : [];
+        setCategories(cats.filter(c => c.count > 0));
+      })
       .catch(() => setCategories([]))
       .finally(() => setLoading(false));
   }, [symbol]);
 
-  if (loading || categories.length === 0) {
-    return <div className="category-panel" style={{ color: 'var(--text-muted)', fontSize: 12, padding: 8 }}>暂无分类</div>;
+  if (loading) {
+    return (
+      <div className="category-panel">
+        <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>加载分类...</div>
+      </div>
+    );
+  }
+
+  if (categories.length === 0) {
+    return (
+      <div className="category-panel">
+        <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>暂无新闻分类</div>
+      </div>
+    );
   }
 
   function handleClick(cat: NewsCategory) {
-    if (activeCategory === cat.category) {
+    if (activeCategory === cat.id) {
       onCategoryChange(null, [], undefined);
     } else {
-      // Fetch articles for this category and extract IDs
-      axios.get(`/api/news/${symbol}?date=`)
-        .then((r) => {
-          const allNews = r.data as any[];
-          const ids = allNews
-            .filter((n) => {
-              const t = n.title || '';
-              switch (cat.category) {
-                case '政策': return /政策|监管|央行|发改委|财政部/.test(t);
-                case '业绩': return /业绩|财报|季报|净利润|营收/.test(t);
-                case '概念': return /概念|题材|板块|AI|新能源/.test(t);
-                case '公告': return /公告|证监会|问询/.test(t);
-                case '市场': return /大盘|指数|上证|北向|外资/.test(t);
-                default: return true;
-              }
-            })
-            .map((n: any) => n.news_id);
-          onCategoryChange(cat.category, ids, cat.color);
-        })
-        .catch(() => {});
+      onCategoryChange(cat.id, [], cat.color);
     }
   }
 
@@ -57,24 +53,24 @@ export default function NewsCategoryPanel({ symbol, activeCategory, onCategoryCh
       <button
         className={`category-chip ${!activeCategory ? 'active' : ''}`}
         onClick={() => onCategoryChange(null, [], undefined)}
-        style={{ color: !activeCategory ? 'var(--text-primary)' : undefined }}
+        style={{ color: !activeCategory ? 'var(--accent-blue)' : undefined }}
       >
         全部
       </button>
-      {categories.map((cat) => (
-        <button
-          key={cat.category}
-          className={`category-chip ${activeCategory === cat.category ? 'active' : ''}`}
-          style={{
-            color: activeCategory === cat.category ? cat.color : undefined,
-            borderColor: activeCategory === cat.category ? cat.color : undefined,
-          }}
-          onClick={() => handleClick(cat)}
-        >
-          {cat.category}
-          <span className="category-count">({cat.count})</span>
-        </button>
-      ))}
+      {categories.map(cat => {
+        const isActive = activeCategory === cat.id;
+        return (
+          <button
+            key={cat.id}
+            className={`category-chip ${isActive ? 'active' : ''}`}
+            onClick={() => handleClick(cat)}
+            style={{ color: isActive ? cat.color : undefined }}
+          >
+            {cat.label}
+            <span className="category-count">{cat.count}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

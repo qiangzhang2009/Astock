@@ -57,7 +57,6 @@ function App() {
   const [rightPanel, setRightPanel] = useState<RightPanelType>('news');
   const [activeTab, setActiveTab] = useState<TabType>('chart');
   const chartAreaRef = useRef<HTMLDivElement>(null);
-  const [chartRect, setChartRect] = useState<DOMRect | undefined>(undefined);
 
   useEffect(() => {
     axios.get('/api/stocks')
@@ -72,12 +71,6 @@ function App() {
       })
       .catch(console.error);
   }, []);
-
-  useEffect(() => {
-    if (selectedRange && chartAreaRef.current) {
-      setChartRect(chartAreaRef.current.getBoundingClientRect());
-    }
-  }, [selectedRange]);
 
   const handleHover = useCallback(
     (date: string | null, ohlc?: { date: string; open: number; high: number; low: number; close: number; change: number }) => {
@@ -286,7 +279,6 @@ function App() {
                 {selectedRange && !rangeQuestion && (
                   <RangeQueryPopup
                     range={selectedRange}
-                    chartRect={chartRect}
                     onAsk={handleRangeAsk}
                     onClose={() => setSelectedRange(null)}
                   />

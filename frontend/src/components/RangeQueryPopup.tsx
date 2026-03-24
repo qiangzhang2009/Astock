@@ -1,55 +1,83 @@
 import { useState } from 'react';
-import type { RangeSelection } from '../types';
+
+interface RangeSelection {
+  startDate: string;
+  endDate: string;
+  priceChange?: number;
+  popupX?: number;
+  popupY?: number;
+}
 
 interface Props {
   range: RangeSelection;
-  chartRect?: DOMRect;
   onAsk: (question: string) => void;
   onClose: () => void;
 }
 
-const PRESET_QUESTIONS = [
-  '这段区间为何涨跌？',
-  '有什么重大新闻驱动了这段走势？',
-  '现在是买入时机吗？',
-  '接下来可能怎么走？',
-];
-
 export default function RangeQueryPopup({ range, onAsk, onClose }: Props) {
-  const [customQ, setCustomQ] = useState('');
+  const [question, setQuestion] = useState('');
+
+  function handleAsk() {
+    if (!question.trim()) return;
+    onAsk(question.trim());
+  }
+
+  function handlePresetAsk(text: string) {
+    onAsk(text);
+  }
+
+  const presets = [
+    { label: '这段区间发生了什么？', text: '这段区间发生了什么？' },
+    { label: '涨跌原因是什么？', text: '涨跌原因是什么？' },
+    { label: '有哪些重大新闻？', text: '有哪些重大新闻影响了股价？' },
+    { label: '后续怎么看？', text: '对后续走势有何判断？' },
+  ];
+
+  const changePct = range.priceChange ?? 0;
+  const isUp = changePct >= 0;
 
   return (
     <div className="range-popup-overlay">
-      <div className="range-popup" style={{ position: 'absolute', left: 12, top: 12 }}>
+      <div className="range-popup">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <div className="range-popup-title">
-            {range.startDate} ~ {range.endDate}
-            {range.priceChange != null && (
-              <span style={{ marginLeft: 8, color: range.priceChange >= 0 ? 'var(--chart-green)' : 'var(--chart-red)', fontWeight: 700 }}>
-                {range.priceChange >= 0 ? '+' : ''}{range.priceChange.toFixed(2)}%
-              </span>
-            )}
+          <div className="range-popup-title" style={{ marginBottom: 0 }}>
+            区间: {range.startDate} ~ {range.endDate}
+            <span style={{
+              marginLeft: 8,
+              fontFamily: 'var(--font-mono)',
+              fontSize: 12,
+              fontWeight: 700,
+              color: isUp ? 'var(--chart-green)' : 'var(--chart-red)',
+            }}>
+              {isUp ? '+' : ''}{changePct.toFixed(2)}%
+            </span>
           </div>
           <button className="range-popup-close" onClick={onClose}>×</button>
         </div>
-        <div className="range-popup-title">选择分析问题：</div>
+
+        {/* Quick question buttons */}
         <div className="range-popup-buttons">
-          {PRESET_QUESTIONS.map((q) => (
-            <button key={q} className="range-btn" onClick={() => onAsk(q)}>
-              {q}
+          {presets.map(p => (
+            <button
+              key={p.label}
+              className="range-btn"
+              onClick={() => handlePresetAsk(p.text)}
+            >
+              {p.label}
             </button>
           ))}
         </div>
+
+        {/* Custom question input */}
         <input
+          type="text"
           className="range-question-input"
-          placeholder="输入自定义问题..."
-          value={customQ}
-          onChange={(e) => setCustomQ(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && customQ.trim()) {
-              onAsk(customQ.trim());
-              setCustomQ('');
-            }
+          placeholder="向 AI 询问这个区间..."
+          value={question}
+          onChange={e => setQuestion(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') handleAsk();
+            if (e.key === 'Escape') onClose();
           }}
         />
       </div>

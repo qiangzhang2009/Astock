@@ -326,4 +326,16 @@ def find_similar_periods(symbol: str, target_date: str, n_periods: int = 5) -> l
         })
 
     results.sort(key=lambda x: x["similarity"], reverse=True)
-    return results[:n_periods]
+    # Normalize field names to match frontend expectations
+    return [
+        {
+            "start_date": r["period_start"],
+            "end_date": r["period_end"],
+            "similarity": r["similarity"],
+            "price_change_pct": r["ret_after_5d"],
+            "ret_t1": None,
+            "ret_t3": None,
+            "ret_t5": None,
+        }
+        for r in results[:n_periods]
+    ]
