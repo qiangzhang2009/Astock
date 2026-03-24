@@ -15,7 +15,7 @@ import urllib.parse
 from datetime import datetime, timedelta
 from typing import Optional
 
-from database import get_conn, SessionLocal, NewsRaw, Layer1Result, NewsAligned, Stock
+from database import get_conn, SessionLocal, NewsRaw, Layer1Result, NewsAligned, Stock, DailyKline
 from pipeline.layer1 import analyze_news_sentiment, _rule_based_sentiment
 
 router = APIRouter()
@@ -58,10 +58,7 @@ def _parse_date(date_str: str) -> str:
 def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
     """
     East Money 搜索 API 作为回退，当数据库为空时实时获取新闻。
-    支持股票公告、市场新闻、概念新闻。
     """
-    market = "sh" if symbol.startswith("6") or symbol.startswith("9") else "sz"
-
     # 构建搜索参数
     param_dict = {
         "uid": "",
@@ -118,24 +115,20 @@ def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
                     pub_date = datetime.now().strftime("%Y-%m-%d")
                 sentiment = _rule_based_sentiment(symbol, title, "")
 
-                    # Clean content field: strip HTML, truncate
-                    content_raw = item.get("content", "") or ""
-                    content_clean = re.sub(r"<[^>]*>", "", content_raw).strip()
-
-                    results.append({
-                        "news_id": news_id,
-                        "d": pub_date,
-                        "s": sentiment["sentiment"],
-                        "r": sentiment["relevance"],
-                        "t": title,
-                        "rt1": None,
-                        "title": title,
-                        "content": content_clean[:300] if content_clean else "",
-                        "source": "东方财富",
-                        "published_at": pub_date,
-                        "sentiment": sentiment["sentiment"],
-                        "sentiment_cn": sentiment["sentiment_cn"],
-                    })
+                results.append({
+                    "news_id": news_id,
+                    "d": pub_date,
+                    "s": sentiment["sentiment"],
+                    "r": sentiment["relevance"],
+                    "t": title,
+                    "rt1": None,
+                    "title": title,
+                    "content": "",
+                    "source": "东方财富",
+                    "published_at": pub_date,
+                    "sentiment": sentiment["sentiment"],
+                    "sentiment_cn": sentiment["sentiment_cn"],
+                })
                 if len(results) >= limit:
                     break
         except Exception:
@@ -504,10 +497,11 @@ def _analyze_and_align(symbol: str, saved_ids: list[str]) -> int:
 def _align_news_to_trading_dates(symbol: str, db):
     try:
         raw_news = db.query(NewsRaw).filter(
-            NewsRaw.id.in_(db.query(Layer1Result.news_id).filter(Layer1Result.symbol == symbol))
+            NewsRaw.id.in_(
+                db.query(Layer1Result.news_id).filter(Layer1Result.symbol == symbol)
+            )
         ).all()
 
-        from database import DailyKline
         klines = db.query(DailyKline).filter(
             DailyKline.code == symbol
         ).order_by(DailyKline.date).all()
