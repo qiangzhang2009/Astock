@@ -27,12 +27,16 @@ jobs:
           SERVICE_ID="srv-d701tin5r7bs73f3md10"
 
           echo "Setting DEEPSEEK_API_KEY on Render..."
-          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /dev/null -X PUT "https://api.render.com/v1/services/$SERVICE_ID/env-vars/DEEPSEEK_API_KEY" \
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /dev/null --http1.1 \
+            -X PUT "https://api.render.com/v1/services/$SERVICE_ID/env-vars/DEEPSEEK_API_KEY" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -d "{\"value\":\"${{ secrets.DEEPSEEK_API_KEY }}\"}")
           echo "DEEPSEEK_API_KEY response: HTTP $HTTP_STATUS"
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "WARNING: DEEPSEEK_API_KEY update failed (this is OK if the key is already set)"
+          fi
           echo ""
 
       # Trigger deploy via Render API
@@ -41,17 +45,25 @@ jobs:
           RENDER_API_KEY="${{ secrets.RENDER_API_KEY }}"
           SERVICE_ID="srv-d701tin5r7bs73f3md10"
           echo "Triggering Render deploy..."
-          RESPONSE=$(curl -s -X POST "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/render_deploy.json --http1.1 \
+            -X POST "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -d '{}')
+          echo "Deploy HTTP status: $HTTP_STATUS"
+          RESPONSE=$(cat /tmp/render_deploy.json 2>/dev/null)
           echo "Deploy response: $RESPONSE"
-          DEPLOY_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null)
-          echo "Deploy ID: $DEPLOY_ID"
-          if [ -z "$DEPLOY_ID" ]; then
-            echo "ERROR: No deploy ID returned"
+          if [ "$HTTP_STATUS" = "202" ] || [ "$HTTP_STATUS" = "200" ]; then
+            DEPLOY_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null)
+            echo "Deploy ID: $DEPLOY_ID"
+            if [ -z "$DEPLOY_ID" ]; then
+              echo "WARNING: HTTP 202 but no deploy ID found"
+            else
+              echo "✓ Deploy triggered: $DEPLOY_ID"
+            fi
+          else
+            echo "ERROR: HTTP $HTTP_STATUS"
             exit 1
           fi
-          echo "✓ Deploy triggered: $DEPLOY_ID"
 
