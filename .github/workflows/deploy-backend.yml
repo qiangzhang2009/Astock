@@ -20,36 +20,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set env vars and deploy to Render
+      # Set DEEPSEEK_API_KEY on Render (if needed)
+      - name: Set env vars on Render
         run: |
           RENDER_API_KEY="${{ secrets.RENDER_API_KEY }}"
           SERVICE_ID="srv-d701tin5r7bs73f3md10"
 
           echo "Setting DEEPSEEK_API_KEY on Render..."
-          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /dev/null -X POST "https://api.render.com/v1/services/$SERVICE_ID/env-vars" \
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /dev/null -X PUT "https://api.render.com/v1/services/$SERVICE_ID/env-vars/DEEPSEEK_API_KEY" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $RENDER_API_KEY" \
-            -d "{\"envVars\":[{\"key\":\"DEEPSEEK_API_KEY\",\"value\":\"${{ secrets.DEEPSEEK_API_KEY }}\"}]}")
-          echo "DEEPSEEK env var response: HTTP $HTTP_STATUS"
-          if [ "$HTTP_STATUS" != "200" ]; then echo "WARNING: DEEPSEEK_API_KEY update may have failed"; fi
+            -d "{\"value\":\"${{ secrets.DEEPSEEK_API_KEY }}\"}")
+          echo "DEEPSEEK_API_KEY response: HTTP $HTTP_STATUS"
           echo ""
 
+      # Trigger deploy via Render API
       - name: Trigger Render deploy
         run: |
           RENDER_API_KEY="${{ secrets.RENDER_API_KEY }}"
           SERVICE_ID="srv-d701tin5r7bs73f3md10"
           echo "Triggering Render deploy..."
-          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/render_response.txt -X POST "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
+          RESPONSE=$(curl -s -X POST "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -d '{}')
-          echo "Deploy HTTP status: $HTTP_STATUS"
-          echo "Response body: $(cat /tmp/render_response.txt)"
-          if [ "$HTTP_STATUS" = "202" ] || [ "$HTTP_STATUS" = "200" ]; then
-            echo "✓ Deploy triggered successfully"
-          else
-            echo "✗ Deploy trigger failed"
+          echo "Deploy response: $RESPONSE"
+          DEPLOY_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null)
+          echo "Deploy ID: $DEPLOY_ID"
+          if [ -z "$DEPLOY_ID" ]; then
+            echo "ERROR: No deploy ID returned"
             exit 1
           fi
+          echo "✓ Deploy triggered: $DEPLOY_ID"
+
