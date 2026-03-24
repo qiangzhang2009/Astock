@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import threading
+import time
 
 from database import init_db, SessionLocal, Stock
 from api.routers import stocks, news, analysis, predict, screener, market
@@ -49,7 +50,6 @@ def _quick_sync(stocks_list: list, max_count: int = 50):
 
 @app.on_event("startup")
 def startup():
-    import time
     # Initialize database schema
     init_db()
     # Seed ALL stocks
