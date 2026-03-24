@@ -96,46 +96,46 @@ def _fetch_em_news_fallback(symbol: str, limit: int = 20) -> list[dict]:
 
     results = []
 
-    # 解析 NDJSON 格式（每行一个 JSON 对象）
-    lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
-    for line in lines:
-        if line.startswith("("):
-            line = line[1:]
-        if line.startswith("{"):
-            try:
-                data = json.loads(line)
-                items = data.get("result", {}).get("cmsArticle", []) or []
-                for item in items:
-                    title_raw = item.get("title", "")
-                    title = re.sub(r"<[^>]+>", "", title_raw).strip()
-                    if not title:
-                        continue
-                    news_id = hashlib.md5(
-                        (title + item.get("date", "")).encode()
-                    ).hexdigest()[:24]
-                    pub_date = item.get("date", "")[:10]
-                    if not pub_date:
-                        pub_date = datetime.now().strftime("%Y-%m-%d")
-                    sentiment = _rule_based_sentiment(symbol, title, "")
+    # 解析 NDJSON 格式：响应为 (JSON1)(JSON2)(JSON3)
+    parts = raw.lstrip("(").rstrip(")").split(")(")
+    for part in parts:
+        part = part.strip().rstrip(")")
+        if not part.startswith("{"):
+            continue
+        try:
+            data = json.loads(part)
+            items = data.get("result", {}).get("cmsArticle", []) or []
+            for item in items:
+                title_raw = item.get("title", "")
+                title = re.sub(r"<[^>]+>", "", title_raw).strip()
+                if not title:
+                    continue
+                news_id = hashlib.md5(
+                    (title + item.get("date", "")).encode()
+                ).hexdigest()[:24]
+                pub_date = item.get("date", "")[:10]
+                if not pub_date:
+                    pub_date = datetime.now().strftime("%Y-%m-%d")
+                sentiment = _rule_based_sentiment(symbol, title, "")
 
-                    results.append({
-                        "news_id": news_id,
-                        "d": pub_date,
-                        "s": sentiment["sentiment"],
-                        "r": sentiment["relevance"],
-                        "t": title,
-                        "rt1": None,
-                        "title": title,
-                        "content": "",
-                        "source": "东方财富",
-                        "published_at": pub_date,
-                        "sentiment": sentiment["sentiment"],
-                        "sentiment_cn": sentiment["sentiment_cn"],
-                    })
-                    if len(results) >= limit:
-                        break
-            except Exception:
-                continue
+                results.append({
+                    "news_id": news_id,
+                    "d": pub_date,
+                    "s": sentiment["sentiment"],
+                    "r": sentiment["relevance"],
+                    "t": title,
+                    "rt1": None,
+                    "title": title,
+                    "content": "",
+                    "source": "东方财富",
+                    "published_at": pub_date,
+                    "sentiment": sentiment["sentiment"],
+                    "sentiment_cn": sentiment["sentiment_cn"],
+                })
+                if len(results) >= limit:
+                    break
+        except Exception:
+            continue
         if len(results) >= limit:
             break
 
