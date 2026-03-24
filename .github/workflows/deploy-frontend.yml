@@ -20,21 +20,19 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
-        run: cd frontend && npm ci
+      - name: Install Vercel CLI
+        run: npm install -g vercel
 
-      - name: Build frontend
+      - name: Install dependencies and build
         run: |
           echo "VITE_API_BASE=https://astock-api.onrender.com" > frontend/.env.production
-          cd frontend && npm run build
-        env:
-          VITE_API_BASE: https://astock-api.onrender.com
+          cd frontend && npm ci && npm run build
 
       - name: Deploy to Vercel
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ vars.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ vars.VERCEL_PROJECT_ID }}
-          vercel-args: '--prod'
-          working-directory: frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: |
+          cd frontend
+          vercel --prod --token=$VERCEL_TOKEN --yes
